@@ -10,8 +10,8 @@ from db_connection import DBConnection
 
 # Constants
 YEAR_FILTER = 2025
-DAY_NAMES = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag']
-WEEKEND_DAYS = {'Samstag', 'Sonntag'}
+DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+WEEKEND_DAYS = {'Saturday', 'Sunday'}
 COLORS = {
     'primary': '#1f77b4',
     'secondary': '#ff7f0e',
@@ -177,8 +177,8 @@ def create_app():
             ], style={'flex': '1', 'textAlign': 'center', 'padding': '20px',
                       'backgroundColor': '#f0f0f0', 'borderRadius': '10px', 'margin': '10px'})
             for title, value, color in [
-                ("Ø Fahrtdauer", f"{kpis['avg_duration']:.1f} Min", COLORS['primary']),
-                ("Gesamt Fahrten", f"{kpis['total_trips']:,}", COLORS['danger']),
+                ("Avg Trip Duration", f"{kpis['avg_duration']:.1f} Min", COLORS['primary']),
+                ("Total Trips", f"{kpis['total_trips']:,}", COLORS['danger']),
             ]]
         ], style={'display': 'flex', 'justifyContent': 'space-around', 'marginBottom': '40px', 'flexWrap': 'wrap'}),
 
@@ -225,12 +225,12 @@ def create_app():
                 x=df_monthly['year_month'],
                 y=df_monthly['avg_duration'],
                 mode='lines+markers',
-                name='Ø Fahrtdauer',
+                name='Avg Duration',
                 line=dict(color=COLORS['primary'], width=3),
                 marker=dict(size=8),
                 fill='tozeroy',
                 fillcolor=f"rgba(31, 119, 180, 0.2)",
-                hovertemplate='<b>%{x|%B %Y}</b><br>Ø Dauer: %{y:.1f} Min<extra></extra>'
+                hovertemplate='<b>%{x|%B %Y}</b><br>Avg Duration: %{y:.1f} Min<extra></extra>'
             ))
             for i in range(len(df_monthly)):
                 fig.add_annotation(
@@ -242,7 +242,7 @@ def create_app():
                     font=dict(size=9, color='#333')
                 )
         fig.update_layout(**create_chart_layout(
-            'Durchschnittliche Fahrtdauer pro Monat', 'Monat', 'Fahrtdauer (Minuten)'
+            'Average Trip Duration by Month', 'Month', 'Trip Duration (Minutes)'
         ))
         return fig
 
@@ -257,9 +257,9 @@ def create_app():
             fig.add_trace(go.Bar(
                 x=df_weekday['day_name'],
                 y=df_weekday['avg_duration'],
-                name='Ø Fahrtdauer',
+                name='Avg Duration',
                 marker_color=colors,
-                hovertemplate='<b>%{x}</b><br>Ø Dauer: %{y:.1f} Min<extra></extra>'
+                hovertemplate='<b>%{x}</b><br>Avg Duration: %{y:.1f} Min<extra></extra>'
             ))
 
             for i, (day, duration) in enumerate(zip(df_weekday['day_name'], df_weekday['avg_duration'])):
@@ -273,7 +273,7 @@ def create_app():
                 )
 
         fig.update_layout(**create_chart_layout(
-            'Durchschnittliche Fahrtdauer nach Wochentag', 'Wochentag', 'Fahrtdauer (Minuten)'
+            'Average Trip Duration by Day of Week', 'Day of Week', 'Trip Duration (Minutes)'
         ))
         return fig
 
@@ -295,11 +295,11 @@ def create_app():
                 y=list(pivot_data.index),
                 colorscale='Viridis',
                 hoverongaps=False,
-                hovertemplate='<b>%{y}</b><br><b>%{x}</b><br>Fahrten: %{z:,.0f}<extra></extra>'
+                hovertemplate='<b>%{y}</b><br><b>%{x}</b><br>Trips: %{z:,.0f}<extra></extra>'
             ))
 
         fig.update_layout(**create_chart_layout(
-            'Fahrten-Heatmap: Wochentag vs Monat', 'Monat', 'Wochentag', 500
+            'Trip Heatmap: Day of Week vs Month', 'Month', 'Day of Week', 500
         ))
         return fig
 
@@ -312,9 +312,9 @@ def create_app():
             fig.add_trace(go.Bar(
                 x=df_fare_weekday['day_name'],
                 y=df_fare_weekday['total_revenue'],
-                name='Gesamtumsatz',
+                name='Total Revenue',
                 marker_color=COLORS['success'],
-                hovertemplate='<b>%{x}</b><br>Umsatz: $%{y:,.2f}<extra></extra>'
+                hovertemplate='<b>%{x}</b><br>Revenue: $%{y:,.2f}<extra></extra>'
             ))
 
             for i, (day, revenue) in enumerate(zip(df_fare_weekday['day_name'], df_fare_weekday['total_revenue'])):
@@ -328,7 +328,7 @@ def create_app():
                 )
 
         fig.update_layout(**create_chart_layout(
-            'Gesamtumsatz nach Wochentag', 'Wochentag', 'Umsatz ($)'
+            'Total Revenue by Day of Week', 'Day of Week', 'Revenue ($)'
         ))
         return fig
 
@@ -342,16 +342,16 @@ def create_app():
                 x=df_hourly['hour'],
                 y=df_hourly['trip_count'],
                 mode='lines+markers',
-                name='Fahrten',
+                name='Trips',
                 line=dict(color=COLORS['secondary'], width=3),
                 marker=dict(size=8),
                 fill='tozeroy',
                 fillcolor=f"rgba(255, 127, 14, 0.2)",
-                hovertemplate='<b>%{x}:00</b><br>Fahrten: %{y:,.0f}<extra></extra>'
+                hovertemplate='<b>%{x}:00</b><br>Trips: %{y:,.0f}<extra></extra>'
             ))
 
         fig.update_layout(**create_chart_layout(
-            'Fahrten nach Tageszeit', 'Stunde', 'Anzahl Fahrten'
+            'Trips by Hour of Day', 'Hour', 'Number of Trips'
         ))
         fig.update_xaxes(tickmode='linear', dtick=2)
         return fig
@@ -365,9 +365,9 @@ def create_app():
             fig.add_trace(go.Bar(
                 x=df_monthly['year_month'],
                 y=df_monthly['trip_count'],
-                name='Fahrten',
+                name='Trips',
                 marker_color=COLORS['danger'],
-                hovertemplate='<b>%{x|%B %Y}</b><br>Fahrten: %{y:,.0f}<extra></extra>'
+                hovertemplate='<b>%{x|%B %Y}</b><br>Trips: %{y:,.0f}<extra></extra>'
             ))
 
             for i, (date, count) in enumerate(zip(df_monthly['year_month'], df_monthly['trip_count'])):
@@ -381,7 +381,7 @@ def create_app():
                 )
 
         fig.update_layout(**create_chart_layout(
-            'Fahrten pro Monat', 'Monat', 'Anzahl Fahrten'
+            'Trips by Month', 'Month', 'Number of Trips'
         ))
         return fig
 
@@ -424,18 +424,18 @@ def create_app():
                 y=df_sorted['zone_name'],
                 x=df_sorted['trip_count'],
                 orientation='h',
-                name='Fahrten',
+                name='Trips',
                 marker_color=COLORS['primary'],
                 text=[f"{count:,.0f}" for count in df_sorted['trip_count']],
                 textposition='inside',
                 textfont=dict(color='white', size=11),
-                hovertemplate='<b>%{y}</b><br>Fahrten: %{x:,.0f}<extra></extra>'
+                hovertemplate='<b>%{y}</b><br>Trips: %{x:,.0f}<extra></extra>'
             ))
 
 
         fig.update_layout(
-            title='Top 10 Pickup-Zonen',
-            xaxis_title='Anzahl Fahrten',
+            title='Top 10 Pickup Locations',
+            xaxis_title='Number of Trips',
             yaxis_title='Zone',
             template='plotly_white',
             height=450,
@@ -449,17 +449,17 @@ def create_app():
         fig = go.Figure()
 
         if not df_payment.empty:
-            # Payment type mapping basierend auf NYC TLC Daten
+            # Payment type mapping based on NYC TLC data
             payment_type_names = {
-                1: 'Kreditkarte',
-                2: 'Bargeld',
-                3: 'Keine Gebühr',
-                4: 'Streit',
-                5: 'Unbekannt',
-                6: 'Annullierte Fahrt'
+                1: 'Credit Card',
+                2: 'Cash',
+                3: 'No Charge',
+                4: 'Dispute',
+                5: 'Unknown',
+                6: 'Voided Trip'
             }
             df_payment_copy = df_payment.copy()
-            df_payment_copy['payment_name'] = df_payment_copy['payment_type'].map(payment_type_names).fillna('Sonstige')
+            df_payment_copy['payment_name'] = df_payment_copy['payment_type'].map(payment_type_names).fillna('Other')
 
             fig.add_trace(go.Pie(
                 labels=df_payment_copy['payment_name'],
@@ -467,11 +467,11 @@ def create_app():
                 hole=0.3,
                 textposition='inside',
                 textinfo='label+percent',
-                hovertemplate='<b>%{label}</b><br>Fahrten: %{value:,.0f}<br>Anteil: %{percent}<extra></extra>'
+                hovertemplate='<b>%{label}</b><br>Trips: %{value:,.0f}<br>Share: %{percent}<extra></extra>'
             ))
 
         fig.update_layout(
-            title='Zahlungsarten-Verteilung',
+            title='Payment Type Distribution',
             template='plotly_white',
             height=450
         )
