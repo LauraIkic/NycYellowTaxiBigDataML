@@ -10,14 +10,6 @@ venv/
 env/
 ENV/
 
-# IDE - Copilot und andere
-.idea/copilot*
-.idea/workspace.xml
-.idea/tasks.xml
-.vscode/
-*.swp
-*.swo
-
 # Logs
 *.log
 nohup.out

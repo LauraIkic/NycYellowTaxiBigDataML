@@ -62,7 +62,8 @@ python run.py --stop
 ├── dashboard_runner.py        # Dashboard Starter
 ├── dashboard.py               # Dash App Definition
 ├── requirements.txt           # Python Dependencies
-├── docker-compose.yml         # PostgreSQL Container
+├── docker-compose.yml         # PostgreSQL Container (✓ vorhanden)
+├── init.sql                   # Datenbank Initialisierung
 ├── db_connection.py           # Datenbankverbindung
 ├── taxi_data_extractor.py     # Datenextraktion
 ├── taxi_data_transformer.py   # Datentransformation

@@ -21,11 +21,15 @@ COLORS = {
     'weekend': '#FF6B6B'
 }
 
-def execute_query(query: str) -> pd.DataFrame:
-    """Executes a SQL query and returns the result as a DataFrame."""
-    db = DBConnection("postgres", "password123", "localhost", 5433, "ny_taxi_dwh")
-    engine = db.connect()
+def get_db_engine():
+    """Returns a singleton database engine."""
+    if not hasattr(get_db_engine, 'engine'):
+        db = DBConnection("postgres", "password123", "localhost", 5433, "ny_taxi_dwh")
+        get_db_engine.engine = db.connect()
+    return get_db_engine.engine
 
+def execute_query(query: str, engine) -> pd.DataFrame:
+    """Executes a SQL query and returns the result as a DataFrame."""
     if engine is None:
         return pd.DataFrame()
 
@@ -37,6 +41,9 @@ def execute_query(query: str) -> pd.DataFrame:
 
 def load_data():
     """Loads all necessary data from the database."""
+    # Use single engine for all queries
+    engine = get_db_engine()
+
     queries = {
         'monthly': f"""
         SELECT dd.year,
@@ -111,7 +118,7 @@ def load_data():
         """
     }
 
-    return tuple(execute_query(query) for query in queries.values())
+    return tuple(execute_query(query, engine) for query in queries.values())
 
 def create_chart_layout(title: str, xaxis: str, yaxis: str, height: int = 450):
     """Creates a consistent chart layout."""
