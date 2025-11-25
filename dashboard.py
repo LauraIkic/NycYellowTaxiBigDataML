@@ -633,12 +633,11 @@ def create_app():
 
         # Charts Row 5 (Weather)
         html.Div([
-            html.Div([dcc.Graph(id='weather-monthly-chart')], style={'width': '48%', 'display': 'inline-block', 'marginRight': '2%'}),
             html.Div([dcc.Graph(id='weather-condition-chart')], style={'width': '48%', 'display': 'inline-block'}),
+            html.Div([dcc.Graph(id='weather-scatter-chart')], style={'width': '100%', 'display': 'inline-block'}),
         ]),
 
         html.Div([
-            html.Div([dcc.Graph(id='weather-scatter-chart')], style={'width': '100%', 'display': 'inline-block'}),
         ])
     ], style={'padding': '20px', 'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#fafafa'})
 
