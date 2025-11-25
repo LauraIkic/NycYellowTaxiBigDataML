@@ -366,37 +366,6 @@ def create_app():
         fig.update_layout(title_text='Payment Type Distribution', height=400)
         return fig
 
-    # ---------------- Weather Charts ---------------- #
-    @callback(Output('weather-monthly-chart', 'figure'), Input('weather-monthly-chart', 'id'))
-    def update_weather_monthly_chart(_):
-        fig = go.Figure()
-        if not df_weather_monthly.empty:
-            fig.add_trace(go.Scatter(
-                x=df_weather_monthly['year_month'],
-                y=df_weather_monthly['avg_temp'],
-                name='Avg Temp (°C)',
-                line=dict(color='red', width=3),
-                mode='lines+markers'
-            ))
-            fig.add_trace(go.Bar(
-                x=df_weather_monthly['year_month'],
-                y=df_weather_monthly['trip_count'],
-                name='Trips',
-                marker_color='blue',
-                opacity=0.5,
-                yaxis='y2'
-            ))
-            fig.update_layout(
-                **create_chart_layout('Monthly Avg Temperature vs Trips', 'Month', 'Avg Temp (°C)', 500),
-                yaxis2=dict(
-                    title='Trip Count',
-                    overlaying='y',
-                    side='right'
-                ),
-                legend=dict(x=0.1, y=1.1)
-            )
-        return fig
-
     @callback(Output('weather-condition-chart', 'figure'), Input('weather-condition-chart', 'id'))
     def update_weather_condition_chart(_):
         fig = go.Figure()
