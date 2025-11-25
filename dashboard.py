@@ -239,8 +239,6 @@ def create_app():
             html.Div([dcc.Graph(id='weather-scatter-chart')], style={'width': '100%', 'display': 'inline-block'}),
         ]),
 
-        html.Div([
-        ])
     ], style={'padding': '20px', 'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#fafafa'})
 
     # Callbacks
