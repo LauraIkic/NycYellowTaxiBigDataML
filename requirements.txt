@@ -14,3 +14,14 @@ numpy>=1.25.0
 scikit-learn>=1.4.0
 matplotlib>=3.8.0
 psycopg2-binary
+
+
+pyarrow>=15.0.0
+numpy>=1.25.0
+scikit-learn>=1.4.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+sqlalchemy>=2.0.0
+tqdm>=4.65.0
+dash>=2.14.0
+plotly>=5.17.0

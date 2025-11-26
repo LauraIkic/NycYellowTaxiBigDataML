@@ -27,16 +27,17 @@ from weather_data_transformer import WeatherDataTransformer
 
 import pandas as pd  # needed for datetime parsing and filtering
 from taxi_data_cleaner import TaxiDataCleaner
+from dashboard import create_app
 
 
 def main() -> None:
     # Database connection settings. Update these to match your local
     # PostgreSQL configuration. The database will be created if it
     # doesn't already exist.
-    user = "Your_User_here"
-    password = "Your_PW_here"
+    user = "postgres"
+    password = "password123"
     host = "localhost"
-    port = "5432"
+    port = "5433"
     dbname = "ny_taxi_dwh"
 
     # Initialize the database connection and create the database if needed.
@@ -124,7 +125,6 @@ def main() -> None:
         print(f"[Weather] An error occurred while processing weather data: {e}")
 
     print("[ETL] NYC Yellow Taxi pipeline completed successfully!")
-
 
 if __name__ == "__main__":
     main()

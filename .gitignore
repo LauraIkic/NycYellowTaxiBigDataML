@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Logs
+*.log
+nohup.out
+dashboard.log
+
+# Docker (falls lokal angepasst)
+docker-compose.override.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+test_*.py
+
