@@ -25,14 +25,12 @@ COLORS = {
 }
 
 def get_db_engine():
-    """Returns a singleton database engine."""
     if not hasattr(get_db_engine, 'engine'):
         db = DBConnection("postgres", "password123", "localhost", 5433, "ny_taxi_dwh")
         get_db_engine.engine = db.connect()
     return get_db_engine.engine
 
 def execute_query(query: str, engine) -> pd.DataFrame:
-    """Executes a SQL query and returns the result as a DataFrame."""
     if engine is None:
         return pd.DataFrame()
 
@@ -43,8 +41,6 @@ def execute_query(query: str, engine) -> pd.DataFrame:
         return pd.DataFrame()
 
 def load_data():
-    """Loads all necessary data from the database."""
-    # Use single engine for all queries
     engine = get_db_engine()
 
     queries = {
@@ -200,7 +196,6 @@ def load_data():
                 AND ft.trip_distance > 0
                 AND ft.trip_distance < 100
                 AND df.fare_amount > 0
-            LIMIT 100000
         """
     }
 
@@ -242,27 +237,24 @@ def create_app():
         df_fare_weekday = df_fare_weekday.sort_values('day_of_week')
         df_fare_weekday['day_name'] = df_fare_weekday['day_of_week'].astype(int).map(lambda x: DAY_NAMES[x])
 
-    # Perform trip clustering
     df_clustered = pd.DataFrame()
     cluster_stats = pd.DataFrame()
     cluster_hourly = pd.DataFrame()
 
     if not df_clustering.empty:
-        # Select features for clustering: duration, price, distance
+        print(f"Clustering: Loaded {len(df_clustering):,} records")
+
         features = ['trip_duration_min', 'fare_amount', 'trip_distance']
         X = df_clustering[features].fillna(0)
 
-        # Scale features
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
-        # Perform K-Means clustering with 2 clusters
         kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
         df_clustering['trip_cluster'] = kmeans.fit_predict(X_scaled)
 
-        # Assign meaningful names based on average values
         cluster_means = df_clustering.groupby('trip_cluster')[features].mean()
-        # Cluster with higher values = Premium/Long trips, lower = Economy/Short trips
+
         cluster_order = cluster_means.mean(axis=1).sort_values()
         cluster_names = {
             cluster_order.index[0]: 'Economy / Short Trips',
@@ -270,7 +262,6 @@ def create_app():
         }
         df_clustering['trip_type'] = df_clustering['trip_cluster'].map(cluster_names)
 
-        # Calculate cluster statistics
         cluster_stats = df_clustering.groupby('trip_type').agg({
             'trip_distance': 'mean',
             'trip_duration_min': 'mean',
@@ -279,10 +270,10 @@ def create_app():
         }).round(2)
         cluster_stats.rename(columns={'trip_cluster': 'count'}, inplace=True)
 
-        # Calculate hourly patterns by cluster
         cluster_hourly = df_clustering.groupby(['hour', 'trip_type']).size().reset_index(name='count')
 
         df_clustered = df_clustering
+        print(f"Clustering complete: {len(df_clustered):,} records - Economy: {len(df_clustered[df_clustered['trip_type']=='Economy / Short Trips']):,} | Premium: {len(df_clustered[df_clustered['trip_type']=='Premium / Long Trips']):,}")
 
     kpis = {
         'avg_duration': safe_agg(df_monthly.get('avg_duration', pd.Series()), lambda s: s.mean()),
@@ -292,7 +283,6 @@ def create_app():
     app.layout = html.Div([
         html.H1("NYC Yellow Taxi Dashboard", style={'textAlign': 'center', 'marginBottom': 30, 'color': '#FFD700'}),
 
-        # KPI Cards
         html.Div([
             *[html.Div([
                 html.H3(title, style={'color': '#666'}),
@@ -305,58 +295,52 @@ def create_app():
             ]]
         ], style={'display': 'flex', 'justifyContent': 'space-around', 'marginBottom': '30px', 'flexWrap': 'wrap'}),
 
-        # Charts Row 1
         html.Div([
-            html.Div([dcc.Graph(id='monthly-duration-chart')], style={'width': '48%', 'display': 'inline-block', 'marginRight': '2%'}),
-            html.Div([dcc.Graph(id='weekday-duration-chart')], style={'width': '48%', 'display': 'inline-block'}),
-        ]),
+            html.Div([dcc.Graph(id='monthly-duration-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='weekday-duration-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
 
-        # Charts Row 2
         html.Div([
-            html.Div([dcc.Graph(id='heatmap-chart')], style={'width': '48%', 'display': 'inline-block', 'marginRight': '2%'}),
-            html.Div([dcc.Graph(id='fare-weekday-chart')], style={'width': '48%', 'display': 'inline-block'}),
-        ]),
+            html.Div([dcc.Graph(id='heatmap-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='fare-weekday-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
 
-        # Charts Row 3
         html.Div([
-            html.Div([dcc.Graph(id='hourly-pickups-chart')], style={'width': '48%', 'display': 'inline-block', 'marginRight': '2%'}),
-            html.Div([dcc.Graph(id='monthly-trips-chart')], style={'width': '48%', 'display': 'inline-block'}),
-        ]),
+            html.Div([dcc.Graph(id='hourly-pickups-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='monthly-trips-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
 
-        # Charts Row 4
         html.Div([
-            html.Div([dcc.Graph(id='top-pickup-locations-chart')], style={'width': '48%', 'display': 'inline-block', 'marginRight': '2%'}),
-            html.Div([dcc.Graph(id='vendor-distribution-chart')], style={'width': '48%', 'display': 'inline-block'}),
-        ]),
+            html.Div([dcc.Graph(id='top-pickup-locations-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='vendor-distribution-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
 
-        # Charts Row 5 (Weather)
         html.Div([
-            html.Div([dcc.Graph(id='weather-condition-chart')], style={'width': '48%', 'display': 'inline-block'}),
-            html.Div([dcc.Graph(id='weather-scatter-chart')], style={'width': '48%', 'display': 'inline-block'}),
-        ]),
+            html.Div([dcc.Graph(id='weather-condition-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='weather-scatter-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
 
-        # Charts Row 6 (Correlation Matrix)
         html.Div([
-            html.Div([dcc.Graph(id='correlation-matrix-chart')], style={'width': '100%', 'display': 'inline-block'}),
-        ]),
+            html.Div([dcc.Graph(id='correlation-matrix-chart')], style={'width': '100%'}),
+        ], style={'marginBottom': '20px'}),
 
-        # Charts Row 7 (Trip Type Clustering)
         html.H2("Trip Type Clustering Analysis", style={'textAlign': 'center', 'marginTop': 40, 'marginBottom': 20, 'color': '#333'}),
 
         html.Div([
-            html.Div([dcc.Graph(id='cluster-distribution-chart')], style={'width': '32%', 'display': 'inline-block', 'marginRight': '2%'}),
-            html.Div([dcc.Graph(id='cluster-characteristics-chart')], style={'width': '32%', 'display': 'inline-block', 'marginRight': '2%'}),
-            html.Div([dcc.Graph(id='cluster-time-patterns-chart')], style={'width': '32%', 'display': 'inline-block'}),
-        ]),
+            html.Div([dcc.Graph(id='cluster-distribution-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='cluster-characteristics-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
 
-        # Charts Row 8 (3D Scatter Plot)
         html.Div([
-            html.Div([dcc.Graph(id='cluster-3d-scatter')], style={'width': '100%', 'display': 'inline-block'}),
-        ], style={'marginTop': '20px'}),
+            html.Div([dcc.Graph(id='cluster-time-patterns-chart')], style={'width': '100%'}),
+        ], style={'marginBottom': '20px'}),
+
+        html.Div([
+            html.Div([dcc.Graph(id='cluster-3d-scatter')], style={'width': '100%'}),
+        ], style={'marginBottom': '20px'}),
 
     ], style={'padding': '20px', 'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#fafafa'})
 
-    # Callbacks
     @callback(Output('monthly-duration-chart', 'figure'), Input('monthly-duration-chart', 'id'))
     def update_monthly_chart(_):
         fig = go.Figure()
@@ -459,7 +443,6 @@ def create_app():
     def update_top_pickup_chart(_):
         fig = go.Figure()
         if not df_top_pickup.empty:
-            # Zone names mapping
             zone_names = {
                 132: 'JFK Airport',
                 138: 'LaGuardia Airport',
@@ -543,7 +526,6 @@ def create_app():
     def update_correlation_matrix(_):
         fig = go.Figure()
         if not df_correlation.empty:
-            # Clean column names for better display
             display_names = {
                 'trip_duration_min': 'Trip Duration',
                 'trip_distance': 'Trip Distance',
@@ -556,14 +538,11 @@ def create_app():
                 'hour': 'Hour of Day'
             }
 
-            # Calculate correlation matrix
             corr_matrix = df_correlation.corr()
 
-            # Rename columns and index for display
             corr_matrix.columns = [display_names.get(col, col) for col in corr_matrix.columns]
             corr_matrix.index = [display_names.get(idx, idx) for idx in corr_matrix.index]
 
-            # Create heatmap
             fig.add_trace(go.Heatmap(
                 z=corr_matrix.values,
                 x=list(corr_matrix.columns),
@@ -594,8 +573,10 @@ def create_app():
     @callback(Output('cluster-distribution-chart', 'figure'), Input('cluster-distribution-chart', 'id'))
     def update_cluster_distribution(_):
         fig = go.Figure()
+        total_trips = 0
         if not df_clustered.empty:
             cluster_counts = df_clustered['trip_type'].value_counts()
+            total_trips = len(df_clustered)
             fig.add_trace(go.Pie(
                 labels=cluster_counts.index,
                 values=cluster_counts.values,
@@ -604,9 +585,10 @@ def create_app():
                 hovertemplate='%{label}<br>Count: %{value:,}<br>%{percent}<extra></extra>'
             ))
         fig.update_layout(
-            title='Trip Type Distribution (2 Clusters)',
-            height=400,
-            template='plotly_white'
+            title=f'Trip Type Distribution (2 Clusters) - Total: {total_trips:,} trips',
+            height=450,
+            template='plotly_white',
+            margin=dict(l=20, r=20, t=60, b=20)
         )
         return fig
 
@@ -614,36 +596,39 @@ def create_app():
     def update_cluster_characteristics(_):
         fig = go.Figure()
         if not cluster_stats.empty:
-            # Create grouped bar chart
+            cluster_info = [f"{cluster}<br>({int(cluster_stats.loc[cluster, 'count']):,} trips)"
+                          for cluster in cluster_stats.index]
+
             fig.add_trace(go.Bar(
                 name='Avg Distance (mi)',
-                x=cluster_stats.index,
+                x=cluster_info,
                 y=cluster_stats['trip_distance'],
                 marker_color='#4ECDC4',
-                hovertemplate='%{x}<br>Distance: %{y:.2f} mi<extra></extra>'
+                hovertemplate='Distance: %{y:.2f} mi<extra></extra>'
             ))
             fig.add_trace(go.Bar(
                 name='Avg Duration (min)',
-                x=cluster_stats.index,
+                x=cluster_info,
                 y=cluster_stats['trip_duration_min'],
                 marker_color='#FFD93D',
-                hovertemplate='%{x}<br>Duration: %{y:.2f} min<extra></extra>'
+                hovertemplate='Duration: %{y:.2f} min<extra></extra>'
             ))
             fig.add_trace(go.Bar(
                 name='Avg Fare ($)',
-                x=cluster_stats.index,
+                x=cluster_info,
                 y=cluster_stats['fare_amount'],
                 marker_color='#FF6B6B',
-                hovertemplate='%{x}<br>Fare: $%{y:.2f}<extra></extra>'
+                hovertemplate='Fare: $%{y:.2f}<extra></extra>'
             ))
         fig.update_layout(
-            title='Cluster Characteristics',
+            title='Cluster Characteristics (Based on All Data)',
             xaxis_title='',
             yaxis_title='Average Value',
             barmode='group',
-            height=400,
+            height=450,
             template='plotly_white',
-            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+            margin=dict(l=60, r=20, t=80, b=100)
         )
         return fig
 
@@ -651,7 +636,6 @@ def create_app():
     def update_cluster_time_patterns(_):
         fig = go.Figure()
         if not cluster_hourly.empty:
-            # Create line chart for each cluster
             colors = {
                 'Economy / Short Trips': '#4ECDC4',
                 'Premium / Long Trips': '#FF6B6B'
@@ -668,14 +652,16 @@ def create_app():
                     marker=dict(size=8),
                     hovertemplate='%{fullData.name}<br>Hour: %{x}:00<br>Trips: %{y:,}<extra></extra>'
                 ))
+        total_data_points = len(df_clustered) if not df_clustered.empty else 0
         fig.update_layout(
-            title='Trip Patterns by Hour (2 Clusters)',
+            title=f'Trip Patterns by Hour (2 Clusters) - All {total_data_points:,} Data Points',
             xaxis_title='Hour of Day',
             yaxis_title='Number of Trips',
-            height=400,
+            height=450,
             template='plotly_white',
             hovermode='x unified',
-            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+            margin=dict(l=60, r=20, t=80, b=60)
         )
         fig.update_xaxes(tickmode='linear', dtick=2)
         return fig
@@ -683,11 +669,23 @@ def create_app():
     @callback(Output('cluster-3d-scatter', 'figure'), Input('cluster-3d-scatter', 'id'))
     def update_3d_scatter(_):
         fig = go.Figure()
-        if not df_clustered.empty:
-            # Sample data for better performance (use every 10th point)
-            df_sample = df_clustered.sample(min(5000, len(df_clustered)), random_state=42)
+        df_sample = pd.DataFrame()
 
-            # Color mapping
+        if not df_clustered.empty:
+            max_total = 50000
+            df_sample_list = []
+
+            for trip_type in df_clustered['trip_type'].unique():
+                cluster_data = df_clustered[df_clustered['trip_type'] == trip_type]
+                cluster_size = len(cluster_data)
+                proportion = cluster_size / len(df_clustered)
+                samples_for_cluster = max(int(max_total * proportion), 100)
+
+                sampled = cluster_data.sample(min(samples_for_cluster, cluster_size), random_state=42)
+                df_sample_list.append(sampled)
+
+            df_sample = pd.concat(df_sample_list, ignore_index=True)
+
             colors_map = {
                 'Economy / Short Trips': '#4ECDC4',
                 'Premium / Long Trips': '#FF6B6B'
@@ -703,9 +701,9 @@ def create_app():
                     mode='markers',
                     name=trip_type,
                     marker=dict(
-                        size=3,
+                        size=2,
                         color=colors_map.get(trip_type, '#999'),
-                        opacity=0.6,
+                        opacity=0.5,
                         line=dict(width=0)
                     ),
                     hovertemplate='<b>%{fullData.name}</b><br>' +
@@ -715,7 +713,7 @@ def create_app():
                 ))
 
         fig.update_layout(
-            title='3D Cluster Visualization: Duration × Price × Distance',
+            title=f'3D Cluster Visualization: Duration × Price × Distance (Sample: {len(df_sample):,} / {len(df_clustered):,} points)',
             scene=dict(
                 xaxis=dict(title='Trip Duration (min)', backgroundcolor='white', gridcolor='lightgray'),
                 yaxis=dict(title='Fare Amount ($)', backgroundcolor='white', gridcolor='lightgray'),
@@ -732,7 +730,9 @@ def create_app():
                 bordercolor='gray',
                 borderwidth=1
             ),
-            margin=dict(l=0, r=0, t=50, b=0)
+            margin=dict(l=0, r=0, t=50, b=0),
+            paper_bgcolor='white',
+            plot_bgcolor='white'
         )
         return fig
 
