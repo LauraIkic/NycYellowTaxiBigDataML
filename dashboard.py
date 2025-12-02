@@ -8,6 +8,11 @@ import pandas as pd
 from sqlalchemy import text
 from db_connection import DBConnection
 
+# Machine learning imports for clustering
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+
 # Constants
 YEAR_FILTER = 2025
 DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -34,7 +39,8 @@ def execute_query(query: str, engine) -> pd.DataFrame:
         return pd.DataFrame()
 
     try:
-        return pd.read_sql(text(query), engine)
+        df = pd.read_sql(text(query), engine)
+        return df
     except Exception as e:
         print(f"Query error: {e}")
         return pd.DataFrame()
@@ -169,9 +175,25 @@ def load_data():
                 AND df.fare_amount IS NOT NULL
                 AND df.tip_amount IS NOT NULL
             LIMIT 50000
+        """,
+        # New query for the tip clustering feature
+        'cluster_data': f"""
+            SELECT
+                df.tip_amount,
+                df.fare_amount,
+                ft.trip_distance
+            FROM fact_trips ft
+            JOIN dim_fare df ON ft.fare_id = df.fare_id
+            JOIN dim_datetime dd ON ft.datetime_id = dd.datetime_id
+            WHERE dd.year >= {YEAR_FILTER}
+              AND df.tip_amount IS NOT NULL
+              AND df.fare_amount IS NOT NULL
+              AND ft.trip_distance IS NOT NULL
+            LIMIT 20000
         """
     }
 
+    # Execute queries in the same order as the dict and return tuple
     return tuple(execute_query(q, engine) for q in queries.values())
 
 def create_chart_layout(title: str, xaxis: str, yaxis: str, height: int = 450):
@@ -186,15 +208,22 @@ def create_chart_layout(title: str, xaxis: str, yaxis: str, height: int = 450):
     )
 
 def safe_agg(series, func, default=0.0):
-    return func(series) if not series.empty and not series.isna().all() else default
+    return func(series) if (series is not None and not series.empty and not series.isna().all()) else default
 
 def create_app():
     app = dash.Dash(__name__)
 
-    # Load all data
+    # Load all data (unpack the new cluster_data as df_cluster)
     (df_monthly, df_weekday, df_heatmap, df_fare_weekday,
      df_hourly, df_top_pickup, df_payment,
-     df_weather_monthly, df_weather_conditions, df_weather_scatter, df_correlation) = load_data()
+     df_weather_monthly, df_weather_conditions, df_weather_scatter,
+     df_correlation, df_cluster) = load_data()
+
+    # Quick debug prints — helpful if things look empty
+    print(f"Loaded: monthly={len(df_monthly)}, weekday={len(df_weekday)}, heatmap={len(df_heatmap)}, "
+          f"fare_weekday={len(df_fare_weekday)}, hourly={len(df_hourly)}, top_pickup={len(df_top_pickup)}, "
+          f"payment={len(df_payment)}, weather_monthly={len(df_weather_monthly)}, weather_conditions={len(df_weather_conditions)}, "
+          f"weather_scatter={len(df_weather_scatter)}, correlation={len(df_correlation)}, cluster={len(df_cluster)}")
 
     # Prepare monthly data
     if not df_monthly.empty:
@@ -211,10 +240,81 @@ def create_app():
         df_fare_weekday['day_name'] = df_fare_weekday['day_of_week'].astype(int).map(lambda x: DAY_NAMES[x])
 
     kpis = {
-        'avg_duration': safe_agg(df_monthly.get('avg_duration', pd.Series()), lambda s: s.mean()),
+        'avg_duration': safe_agg(df_monthly.get('avg_duration', pd.Series(dtype=float)), lambda s: s.mean()),
         'total_trips': int(df_monthly['trip_count'].sum()) if not df_monthly.empty else 0
     }
 
+    # --------------------
+    # Clustering (3 clusters) based on df_correlation (existing)
+    # --------------------
+    df_clustered = pd.DataFrame()
+    clustering_error = None
+    try:
+        # check df_correlation presence & columns
+        if df_correlation is None or df_correlation.empty:
+            clustering_error = "df_correlation is empty or None"
+        else:
+            # ensure required columns exist
+            required_cols = {'trip_distance', 'tip_amount', 'hour', 'passenger_count'}
+            missing = required_cols.difference(set(df_correlation.columns))
+            if missing:
+                clustering_error = f"Missing columns for clustering: {missing}"
+            else:
+                df_features = df_correlation[['trip_distance', 'tip_amount', 'hour', 'passenger_count']].dropna()
+                if df_features.empty:
+                    clustering_error = "No rows after dropping NaNs for clustering"
+                else:
+                    # sample for speed
+                    sample_size = min(50000, len(df_features))
+                    if sample_size < len(df_features):
+                        df_features = df_features.sample(sample_size, random_state=42)
+                    else:
+                        df_features = df_features.copy()
+
+                    # scale
+                    scaler = StandardScaler()
+                    X = scaler.fit_transform(df_features)
+
+                    # KMeans with 3 clusters
+                    n_clusters = 3
+                    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                    labels = kmeans.fit_predict(X)
+                    df_features['cluster'] = labels.astype(int)
+
+                    # PCA for plotting (2 components)
+                    pca = PCA(n_components=2, random_state=42)
+                    pcs = pca.fit_transform(X)
+                    df_features['pc1'] = pcs[:, 0]
+                    df_features['pc2'] = pcs[:, 1]
+
+                    # safe labeling of clusters based on centroid sums (trip_distance + tip_amount)
+                    centroids_unscaled = pd.DataFrame(scaler.inverse_transform(kmeans.cluster_centers_),
+                                                      columns=['trip_distance', 'tip_amount', 'hour', 'passenger_count'])
+                    sums = centroids_unscaled['trip_distance'] + centroids_unscaled['tip_amount']
+                    if n_clusters == 3:
+                        min_idx = sums.idxmin()
+                        max_idx = sums.idxmax()
+                        other_idx = [i for i in range(n_clusters) if i not in (min_idx, max_idx)]
+                        label_map = {}
+                        label_map[min_idx] = 'Typical Trips'
+                        label_map[max_idx] = 'Long / High-Tip Trips'
+                        if other_idx:
+                            label_map[other_idx[0]] = 'Other Cluster'
+                    else:
+                        # fallback generic labels
+                        label_map = {i: f'Cluster {i+1}' for i in range(n_clusters)}
+
+                    # Apply label mapping safely (if some centroid indices are weird, fallback to generic names)
+                    df_features['cluster_label'] = df_features['cluster'].map(lambda x: label_map.get(x, f'Cluster {x+1}'))
+
+                    df_clustered = df_features.reset_index(drop=True)
+    except Exception as e:
+        clustering_error = str(e)
+        print("Clustering error:", clustering_error)
+
+    # --------------------
+    # Layout
+    # --------------------
     app.layout = html.Div([
         html.H1("NYC Yellow Taxi Dashboard", style={'textAlign': 'center', 'marginBottom': 30, 'color': '#FFD700'}),
 
@@ -266,13 +366,26 @@ def create_app():
             html.Div([dcc.Graph(id='correlation-matrix-chart')], style={'width': '100%', 'display': 'inline-block'}),
         ]),
 
+        # Clustering Row (3-cluster)
+        html.Div([
+            html.Div([dcc.Graph(id='clustering-scatter')], style={'width': '58%', 'display': 'inline-block', 'marginRight': '2%'}),
+            html.Div([dcc.Graph(id='clustering-profile')], style={'width': '40%', 'display': 'inline-block'}),
+        ], style={'marginTop': '30px'}),
+
+        # Tip clustering chart (new)
+        html.Div([
+            html.Div([dcc.Graph(id='tip-cluster-chart')], style={'width': '100%', 'display': 'inline-block', 'marginTop': '20px'}),
+        ]),
+
     ], style={'padding': '20px', 'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#fafafa'})
 
-    # Callbacks
+    # --------------------
+    # Callbacks (original charts)
+    # --------------------
     @callback(Output('monthly-duration-chart', 'figure'), Input('monthly-duration-chart', 'id'))
     def update_monthly_chart(_):
         fig = go.Figure()
-        if not df_monthly.empty:
+        if not df_monthly.empty and 'year_month' in df_monthly.columns:
             fig.add_trace(go.Scatter(
                 x=df_monthly['year_month'],
                 y=df_monthly['avg_duration'],
@@ -309,7 +422,8 @@ def create_app():
             pivot_data = df_heatmap.pivot(index='day_of_week', columns='month', values='trip_count')
             pivot_data = pivot_data.reindex(range(7)).fillna(0)
             pivot_data.index = DAY_NAMES
-            pivot_data.columns = [calendar.month_name[i] for i in pivot_data.columns if i <= 12]
+            # ensure months are 1..12
+            pivot_data.columns = [calendar.month_name[int(i)] for i in pivot_data.columns if int(i) <= 12]
             fig.add_trace(go.Heatmap(
                 z=pivot_data.values,
                 x=list(pivot_data.columns),
@@ -356,7 +470,7 @@ def create_app():
     @callback(Output('monthly-trips-chart', 'figure'), Input('monthly-trips-chart', 'id'))
     def update_monthly_trips_chart(_):
         fig = go.Figure()
-        if not df_monthly.empty:
+        if not df_monthly.empty and 'year_month' in df_monthly.columns:
             fig.add_trace(go.Bar(
                 x=df_monthly['year_month'],
                 y=df_monthly['trip_count'],
@@ -470,6 +584,152 @@ def create_app():
             xaxis={'side': 'bottom'},
             yaxis={'autorange': 'reversed'}
         )
+        return fig
+
+    # --------------------
+    # Clustering callbacks (original df_correlation-based clusters)
+    # --------------------
+    @callback(Output('clustering-scatter','figure'), Input('clustering-scatter','id'))
+    def update_clustering_scatter(_):
+        fig = go.Figure()
+        if clustering_error:
+            fig.add_trace(go.Scatter(x=[0], y=[0], mode='text', text=[f"Clustering error: {clustering_error}"]))
+            fig.update_layout(title='Clustering Scatter (error)', template='plotly_white')
+            return fig
+        if df_clustered.empty:
+            fig.update_layout(title='Clustering Scatter (no data)', template='plotly_white')
+            return fig
+
+        # Plot by cluster_label
+        for cl_label in df_clustered['cluster_label'].unique():
+            sub = df_clustered[df_clustered['cluster_label'] == cl_label]
+            fig.add_trace(go.Scatter(
+                x=sub['trip_distance'],
+                y=sub['tip_amount'],
+                mode='markers',
+                name=cl_label,
+                marker=dict(size=6),
+                hovertemplate='Distance: %{x}<br>Tip: %{y}<br>Hour: %{customdata[0]}<br>Passengers: %{customdata[1]}<extra></extra>',
+                customdata=sub[['hour','passenger_count']].values
+            ))
+
+        fig.update_layout(
+            title=f'Trip Behavior Clusters (Trip Distance vs Tip Amount) — k={df_clustered["cluster"].nunique() if not df_clustered.empty else 0}',
+            xaxis_title='Trip Distance',
+            yaxis_title='Tip Amount ($)',
+            template='plotly_white',
+            height=500,
+            legend=dict(itemsizing='constant')
+        )
+        return fig
+
+    @callback(Output('clustering-profile','figure'), Input('clustering-profile','id'))
+    def update_clustering_profile(_):
+        fig = go.Figure()
+        if clustering_error or df_clustered.empty:
+            fig.update_layout(title='Cluster Profile (no data)', template='plotly_white')
+            return fig
+
+        profile = df_clustered.groupby('cluster_label').agg(count=('trip_distance','size')).reset_index()
+        fig.add_trace(go.Bar(
+            x=profile['cluster_label'],
+            y=profile['count'],
+            name='Cluster Size',
+            marker_color=COLORS['primary'],
+            hovertemplate='Cluster %{x}<br>Size: %{y:,}<extra></extra>'
+        ))
+        fig.update_layout(title='Cluster Sizes', xaxis_title='Cluster', yaxis_title='Number of Trips', template='plotly_white', height=500)
+        return fig
+
+    # --------------------
+    # Tip clustering callback (new)
+    # --------------------
+    @callback(Output('tip-cluster-chart','figure'), Input('tip-cluster-chart','id'))
+    def update_tip_cluster_chart(_):
+        fig = go.Figure()
+
+        # Safety checks
+        if df_cluster is None or df_cluster.empty:
+            fig.update_layout(title='Tip Clustering (no data)', template='plotly_white', height=500)
+            return fig
+
+        # Need at least a small number of rows to cluster
+        min_rows = 30
+        if len(df_cluster) < min_rows:
+            fig.update_layout(title=f'Tip Clustering (need >= {min_rows} rows)', template='plotly_white', height=500)
+            return fig
+
+        # Prepare and clean data
+        df_tip = df_cluster[['tip_amount', 'fare_amount', 'trip_distance']].dropna().copy()
+        if df_tip.empty:
+            fig.update_layout(title='Tip Clustering (no valid rows after dropna)', template='plotly_white', height=500)
+            return fig
+
+        # Standardize features
+        scaler_tip = StandardScaler()
+        X_tip = scaler_tip.fit_transform(df_tip)
+
+        # KMeans clustering (choose 4 clusters by default)
+        n_clusters_tip = 4
+        try:
+            kmeans_tip = KMeans(n_clusters=n_clusters_tip, random_state=42, n_init=10)
+            clusters_tip = kmeans_tip.fit_predict(X_tip)
+        except Exception as e:
+            fig.update_layout(title=f'Tip Clustering error: {e}', template='plotly_white', height=500)
+            return fig
+
+        df_tip['cluster'] = clusters_tip.astype(int)
+
+        # Optional: label clusters by centroid tip/fare ratio or leave numeric labels
+        centroids_tip = pd.DataFrame(scaler_tip.inverse_transform(kmeans_tip.cluster_centers_), columns=['tip_amount','fare_amount','trip_distance'])
+        # Example rule: cluster with highest average tip_amount -> "High Tip", lowest -> "Low Tip", others -> "Mid Tip"
+        tip_means = centroids_tip['tip_amount']
+        high_idx = tip_means.idxmax()
+        low_idx = tip_means.idxmin()
+        label_map_tip = {}
+        for i in range(n_clusters_tip):
+            if i == high_idx:
+                label_map_tip[i] = 'High Tip'
+            elif i == low_idx:
+                label_map_tip[i] = 'Low Tip'
+            else:
+                label_map_tip[i] = f'Mid Tip {i}'
+
+        df_tip['cluster_label'] = df_tip['cluster'].map(lambda x: label_map_tip.get(x, f'Cluster {x+1}'))
+
+        # Plot Fare vs Tip colored by cluster
+        fig.add_trace(go.Scatter(
+            x=df_tip['fare_amount'],
+            y=df_tip['tip_amount'],
+            mode='markers',
+            marker=dict(
+                size=7,
+                color=df_tip['cluster'],
+                colorscale='Viridis',
+                showscale=True,
+                colorbar=dict(title='Cluster')
+            ),
+            text=[
+                f"Fare: ${f:.2f}<br>Tip: ${t:.2f}<br>Distance: {d:.2f}"
+                for f, t, d in zip(df_tip['fare_amount'], df_tip['tip_amount'], df_tip['trip_distance'])
+            ],
+            hovertemplate="%{text}<extra></extra>"
+        ))
+
+        # Add cluster centroid markers (unscaled values)
+        centroids_plot = centroids_tip
+        fig.add_trace(go.Scatter(
+            x=centroids_plot['fare_amount'],
+            y=centroids_plot['tip_amount'],
+            mode='markers+text',
+            marker=dict(size=14, symbol='x', color='black'),
+            text=[label_map_tip.get(i, f'C{i}') for i in range(len(centroids_plot))],
+            textposition='top center',
+            name='Centroids',
+            hovertemplate='Centroid: Tip %{y:.2f}, Fare %{x:.2f}<extra></extra>'
+        ))
+
+        fig.update_layout(**create_chart_layout('Tip Clustering — Fare vs Tip', 'Fare Amount ($)', 'Tip Amount ($)', 600))
         return fig
 
     return app
