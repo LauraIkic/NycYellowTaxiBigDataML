@@ -19,12 +19,15 @@ YEAR_FILTER = 2025
 DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 WEEKEND_DAYS = {'Saturday', 'Sunday'}
 COLORS = {
-    'primary': '#1f77b4',
-    'secondary': '#ff7f0e',
-    'success': '#2ca02c',
-    'danger': '#d62728',
-    'weekday': '#4ECDC4',
-    'weekend': '#FF6B6B'
+    'primary': '#91C4E5',      # Soft blue
+    'secondary': '#FFB7B2',    # Soft coral/pink
+    'success': '#A8E6CF',      # Soft mint green
+    'danger': '#FFA8A8',       # Soft red/pink
+    'weekday': '#AAE3E2',      # Soft teal
+    'weekend': '#C7CEEA',      # Soft purple/lavender
+    'accent1': '#FFE5B4',      # Soft yellow
+    'accent2': '#E0BBE4',      # Soft purple
+    'accent3': '#D4A5A5'       # Soft mauve
 }
 
 # --- Helpers for Map Tiles / Zone labels -------------------------------------
@@ -289,6 +292,24 @@ def load_data():
             WHERE dd.year >= {YEAR_FILTER}
             GROUP BY ft."DOLocationID"
         """,
+        'pickup_by_hour_location': f"""
+            SELECT dd.hour,
+                   ft."PULocationID" AS location_id,
+                   COUNT(*) AS trip_count
+            FROM fact_trips ft
+            JOIN dim_datetime dd ON ft.datetime_id = dd.datetime_id
+            WHERE dd.year >= {YEAR_FILTER}
+            GROUP BY dd.hour, ft."PULocationID"
+        """,
+        'dropoff_by_hour_location': f"""
+            SELECT dd.hour,
+                   ft."DOLocationID" AS location_id,
+                   COUNT(*) AS trip_count
+            FROM fact_trips ft
+            JOIN dim_datetime dd ON ft.datetime_id = dd.datetime_id
+            WHERE dd.year >= {YEAR_FILTER}
+            GROUP BY dd.hour, ft."DOLocationID"
+        """,
     }
 
     return tuple(execute_query(q, engine) for q in queries.values())
@@ -317,7 +338,7 @@ def create_app():
     (df_monthly, df_weekday, df_heatmap, df_fare_weekday,
      df_hourly, df_top_pickup, df_payment,
      df_weather_monthly, df_weather_conditions, df_weather_scatter,
-     df_correlation, df_clustering, df_pickup_all, df_dropoff_all) = load_data()
+     df_correlation, df_clustering, df_pickup_all, df_dropoff_all, df_pickup_hourly, df_dropoff_hourly) = load_data()
 
     # Load zone label maps once (for charts & hovers)
     zone_name_map, zone_borough_map = _load_zone_lookup()
@@ -428,30 +449,35 @@ def create_app():
             ]]
         ], style={'display': 'flex', 'justifyContent': 'space-around', 'marginBottom': '30px', 'flexWrap': 'wrap'}),
 
+        # Maps row
         html.Div([
-            html.Div([dcc.Graph(id='monthly-duration-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='pickup-map')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='dropoff-map')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
+        # Store for selected hours
+        dcc.Store(id='selected-hours', data=[]),
+
+        # Hourly histogram for selection
+        html.Div([
+            dcc.Graph(id='hourly-pickup-histogram')
+        ], style={'marginBottom': '40px'}),
+
+        # Time-based Analysis Row
+        html.Div([
+            html.Div([dcc.Graph(id='monthly-trips-chart')], style={'flex': '1'}),
             html.Div([dcc.Graph(id='weekday-duration-chart')], style={'flex': '1'}),
         ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
 
+        # Heatmap and Revenue Row
         html.Div([
             html.Div([dcc.Graph(id='heatmap-chart')], style={'flex': '1'}),
             html.Div([dcc.Graph(id='fare-weekday-chart')], style={'flex': '1'}),
         ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
 
-        html.Div([
-            html.Div([dcc.Graph(id='hourly-pickups-chart')], style={'flex': '1'}),
-            html.Div([dcc.Graph(id='monthly-trips-chart')], style={'flex': '1'}),
-        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
-
+        # Top Locations and Payment Distribution
         html.Div([
             html.Div([dcc.Graph(id='top-pickup-locations-chart')], style={'flex': '1'}),
             html.Div([dcc.Graph(id='vendor-distribution-chart')], style={'flex': '1'}),
-        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
-
-        # New: Maps row
-        html.Div([
-            html.Div([dcc.Graph(id='pickup-map')], style={'flex': '1'}),
-            html.Div([dcc.Graph(id='dropoff-map')], style={'flex': '1'}),
         ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
 
         html.Div([
@@ -481,24 +507,6 @@ def create_app():
     ], style={'padding': '20px', 'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#fafafa'})
 
     # ------------------- Callbacks -------------------
-
-    @callback(Output('monthly-duration-chart', 'figure'), Input('monthly-duration-chart', 'id'))
-    def update_monthly_chart(_):
-        fig = go.Figure()
-        if not df_monthly.empty:
-            fig.add_trace(go.Scatter(
-                x=df_monthly['year_month'],
-                y=df_monthly['avg_duration'],
-                mode='lines+markers',
-                name='Avg Duration',
-                line=dict(color=COLORS['primary'], width=3),
-                marker=dict(size=8),
-                fill='tozeroy',
-                fillcolor="rgba(31, 119, 180, 0.2)",
-                hovertemplate='<b>%{x|%B %Y}</b><br>Avg Duration: %{y:.1f} Min<extra></extra>'
-            ))
-        fig.update_layout(**create_chart_layout('Average Trip Duration by Month', 'Month', 'Trip Duration (Minutes)'))
-        return fig
 
     @callback(Output('weekday-duration-chart', 'figure'), Input('weekday-duration-chart', 'id'))
     def update_weekday_chart(_):
@@ -547,25 +555,6 @@ def create_app():
         fig.update_layout(**create_chart_layout('Total Revenue by Day of Week', 'Day of Week', 'Revenue ($)'))
         return fig
 
-    @callback(Output('hourly-pickups-chart', 'figure'), Input('hourly-pickups-chart', 'id'))
-    def update_hourly_chart(_):
-        fig = go.Figure()
-        if not df_hourly.empty:
-            fig.add_trace(go.Scatter(
-                x=df_hourly['hour'],
-                y=df_hourly['trip_count'],
-                mode='lines+markers',
-                name='Trips',
-                line=dict(color=COLORS['secondary'], width=3),
-                marker=dict(size=8),
-                fill='tozeroy',
-                fillcolor="rgba(255, 127, 14, 0.2)",
-                hovertemplate='<b>%{x}:00</b><br>Trips: %{y:,.0f}<extra></extra>'
-            ))
-        fig.update_layout(**create_chart_layout('Trips by Hour of Day', 'Hour', 'Number of Trips'))
-        fig.update_xaxes(tickmode='linear', dtick=2)
-        return fig
-
     @callback(Output('monthly-trips-chart', 'figure'), Input('monthly-trips-chart', 'id'))
     def update_monthly_trips_chart(_):
         fig = go.Figure()
@@ -595,20 +584,59 @@ def create_app():
                 marker_color=COLORS['primary'],
                 hovertemplate='<b>%{y}</b><br>Trips: %{x:,}<extra></extra>'
             ))
-        fig.update_layout(**create_chart_layout('Top 10 Pickup Locations', 'Number of Trips', 'Zone'))
+        layout = create_chart_layout('Top 10 Pickup Locations', 'Number of Trips', 'Zone')
+        layout['height'] = 550
+        fig.update_layout(**layout)
         return fig
 
     @callback(Output('vendor-distribution-chart', 'figure'), Input('vendor-distribution-chart', 'id'))
     def update_payment_chart(_):
         fig = go.Figure()
         if not df_payment.empty:
+            # Use pastel color palette
+            pastel_colors = [
+                COLORS['primary'],
+                COLORS['secondary'],
+                COLORS['success'],
+                COLORS['weekday'],
+                COLORS['accent1'],
+                COLORS['accent2'],
+                COLORS['accent3']
+            ]
             fig.add_trace(go.Pie(
                 labels=df_payment['payment_name'],
                 values=df_payment['trip_count'],
-                hole=0.4,
-                hovertemplate='<b>%{label}</b><br>Trips: %{value:,}<br>%{percent}<extra></extra>'
+                hole=0.3,
+                marker=dict(
+                    colors=pastel_colors,
+                    line=dict(color='white', width=2)
+                ),
+                textposition='auto',
+                textinfo='label+percent',
+                textfont=dict(size=13, color='#333'),
+                pull=[0.05 if i == df_payment['trip_count'].idxmax() else 0 for i in range(len(df_payment))],
+                hovertemplate='<b>%{label}</b><br>Trips: %{value:,}<br>Percentage: %{percent}<extra></extra>'
             ))
-        fig.update_layout(title_text='Payment Type Distribution', height=400)
+        fig.update_layout(
+            title=dict(
+                text='Payment Type Distribution',
+                font=dict(size=18, color='#333'),
+                x=0.5,
+                xanchor='center'
+            ),
+            height=550,
+            showlegend=True,
+            legend=dict(
+                orientation='v',
+                yanchor='middle',
+                y=0.5,
+                xanchor='left',
+                x=1.02,
+                font=dict(size=12)
+            ),
+            template='plotly_white',
+            margin=dict(l=20, r=150, t=80, b=20)
+        )
         return fig
 
     # ------------------- Maps -------------------
@@ -646,25 +674,58 @@ def create_app():
             lon=merged["lon"],
             lat=merged["lat"],
             mode="markers",
-            marker=dict(size=size, color=merged["trip_count"], colorscale="Viridis", showscale=True),
+            marker=dict(
+                size=size,
+                color=merged["trip_count"],
+                colorscale=[[0, "rgb(12,51,131)"], [0.25, "rgb(10,136,186)"], [0.5, "rgb(242,211,56)"], [0.75, "rgb(242,143,56)"], [1, "rgb(217,30,30)"]],
+                opacity=0.8,
+                showscale=True,
+                colorbar=dict(
+                    title=dict(text="Trips", side="right"),
+                    thickness=12,
+                    len=0.5,
+                    x=0.98,
+                    y=0.5,
+                    xanchor="right",
+                    yanchor="middle",
+                    bgcolor="rgba(255,255,255,0.85)",
+                    bordercolor="#333",
+                    borderwidth=1,
+                    tickfont=dict(color="#333", size=10),
+                    titlefont=dict(size=11)
+                )
+            ),
             text=[f"{_label(lid)}<br>Trips: {cnt:,}" for lid, cnt in zip(merged["location_id"], merged["trip_count"])],
             hoverinfo="text"
         ))
         fig.update_layout(
-            mapbox_style="open-street-map",
+            mapbox_style="carto-positron",
             mapbox_center={"lon": -73.9851, "lat": 40.7589},
             mapbox_zoom=9, height=550, title=title,
             margin=dict(l=10, r=10, t=50, b=10),
+            paper_bgcolor="#f5f5f5",
+            font=dict(color="#333")
         )
         return fig
 
-    @callback(Output('pickup-map', 'figure'), Input('pickup-map', 'id'))
-    def update_pickup_map(_):
-        return _build_map_figure(df_pickup_all, "Pickup Locations (All)")
+    @callback(
+        Output('dropoff-map', 'figure'),
+        Input('selected-hours', 'data')
+    )
+    def update_dropoff_map_filtered(selected_hours):
+        """Update dropoff map based on selected hours."""
+        # If no hours selected, show all data
+        if not selected_hours:
+            return _build_map_figure(df_dropoff_all, "Dropoff Locations (All Hours)")
 
-    @callback(Output('dropoff-map', 'figure'), Input('dropoff-map', 'id'))
-    def update_dropoff_map(_):
-        return _build_map_figure(df_dropoff_all, "Dropoff Locations (All)")
+        # Filter data by selected hours
+        df_filtered = df_dropoff_hourly[df_dropoff_hourly['hour'].isin(selected_hours)]
+        df_aggregated = df_filtered.groupby('location_id', as_index=False)['trip_count'].sum()
+
+        hours_str = ', '.join([f"{h}:00" for h in sorted(selected_hours)])
+        title = f"Dropoff Locations (Hours: {hours_str})"
+
+        return _build_map_figure(df_aggregated, title)
 
     # ------------------- Weather / Correlation -------------------
 
@@ -756,7 +817,7 @@ def create_app():
                 labels=cluster_counts.index,
                 values=cluster_counts.values,
                 hole=0.4,
-                marker=dict(colors=['#4ECDC4', '#FF6B6B']),
+                marker=dict(colors=[COLORS['weekday'], COLORS['secondary']]),
                 hovertemplate='%{label}<br>Count: %{value:,}<br>%{percent}<extra></extra>'
             ))
         fig.update_layout(
@@ -778,21 +839,21 @@ def create_app():
                 name='Avg Distance (mi)',
                 x=cluster_info,
                 y=cluster_stats['trip_distance'],
-                marker_color='#4ECDC4',
+                marker_color=COLORS['weekday'],
                 hovertemplate='Distance: %{y:.2f} mi<extra></extra>'
             ))
             fig.add_trace(go.Bar(
                 name='Avg Duration (min)',
                 x=cluster_info,
                 y=cluster_stats['trip_duration_min'],
-                marker_color='#FFD93D',
+                marker_color=COLORS['accent1'],
                 hovertemplate='Duration: %{y:.2f} min<extra></extra>'
             ))
             fig.add_trace(go.Bar(
                 name='Avg Fare ($)',
                 x=cluster_info,
                 y=cluster_stats['fare_amount'],
-                marker_color='#FF6B6B',
+                marker_color=COLORS['secondary'],
                 hovertemplate='Fare: $%{y:.2f}<extra></extra>'
             ))
         fig.update_layout(
@@ -812,8 +873,8 @@ def create_app():
         fig = go.Figure()
         if not cluster_hourly.empty:
             colors = {
-                'Economy / Short Trips': '#4ECDC4',
-                'Premium / Long Trips': '#FF6B6B'
+                'Economy / Short Trips': COLORS['weekday'],
+                'Premium / Long Trips': COLORS['secondary']
             }
 
             for trip_type in cluster_hourly['trip_type'].unique():
@@ -823,7 +884,7 @@ def create_app():
                     y=data['count'],
                     mode='lines+markers',
                     name=trip_type,
-                    line=dict(color=colors.get(trip_type, '#999'), width=3),
+                    line=dict(color=colors.get(trip_type, COLORS['primary']), width=3),
                     marker=dict(size=8),
                     hovertemplate='%{fullData.name}<br>Hour: %{x}:00<br>Trips: %{y:,}<extra></extra>'
                 ))
@@ -862,8 +923,8 @@ def create_app():
             df_sample = pd.concat(df_sample_list, ignore_index=True)
 
             colors_map = {
-                'Economy / Short Trips': '#4ECDC4',
-                'Premium / Long Trips': '#FF6B6B'
+                'Economy / Short Trips': COLORS['weekday'],
+                'Premium / Long Trips': COLORS['secondary']
             }
 
             for trip_type in df_sample['trip_type'].unique():
@@ -877,7 +938,7 @@ def create_app():
                     name=trip_type,
                     marker=dict(
                         size=2,
-                        color=colors_map.get(trip_type, '#999'),
+                        color=colors_map.get(trip_type, COLORS['primary']),
                         opacity=0.5,
                         line=dict(width=0)
                     ),
@@ -910,6 +971,88 @@ def create_app():
             plot_bgcolor='white'
         )
         return fig
+
+    # ------------------- Interactive Hourly Pickup Analysis -------------------
+
+    @callback(
+        Output('hourly-pickup-histogram', 'figure'),
+        Input('selected-hours', 'data')
+    )
+    def update_hourly_histogram(selected_hours):
+        """Create histogram showing trips by hour with visual feedback for selected hours."""
+        fig = go.Figure()
+        if df_hourly.empty:
+            return fig
+
+        # Create bar colors based on selection
+        colors = [COLORS['secondary'] if hour in selected_hours else COLORS['weekday'] for hour in df_hourly['hour']]
+
+        fig.add_trace(go.Bar(
+            x=df_hourly['hour'],
+            y=df_hourly['trip_count'],
+            marker_color=colors,
+            width=0.5,
+            hovertemplate='<b>Hour %{x}:00</b><br>Trips: %{y:,.0f}<br>Click to filter map<extra></extra>'
+        ))
+
+        title_text = 'Select Hour to Filter Pickup Map'
+        if selected_hours:
+            hours_str = ', '.join([f"{h}:00" for h in sorted(selected_hours)])
+            title_text = f'Pickup Trips by Hour - Filtering: {hours_str}'
+
+        fig.update_layout(
+            title=title_text,
+            xaxis_title='Hour of Day',
+            yaxis_title='Number of Trips',
+            hovermode='closest',
+            template='plotly_white',
+            height=300,
+            margin=dict(l=50, r=50, t=50, b=50),
+            xaxis=dict(tickmode='linear', dtick=2),
+            bargap=0.3
+        )
+        return fig
+
+    @callback(
+        Output('selected-hours', 'data'),
+        Input('hourly-pickup-histogram', 'clickData'),
+        State('selected-hours', 'data'),
+        prevent_initial_call=True
+    )
+    def update_selected_hours(clickData, current_hours):
+        """Toggle hour selection when clicking histogram bars."""
+        if not clickData:
+            return current_hours or []
+
+        # Get clicked hour
+        clicked_hour = clickData['points'][0]['x']
+
+        # Toggle selection
+        if clicked_hour in current_hours:
+            current_hours.remove(clicked_hour)
+        else:
+            current_hours.append(clicked_hour)
+
+        return current_hours
+
+    @callback(
+        Output('pickup-map', 'figure'),
+        Input('selected-hours', 'data')
+    )
+    def update_pickup_map_filtered(selected_hours):
+        """Update pickup map based on selected hours."""
+        # If no hours selected, show all data
+        if not selected_hours:
+            return _build_map_figure(df_pickup_all, "Pickup Locations (All Hours)")
+
+        # Filter data by selected hours
+        df_filtered = df_pickup_hourly[df_pickup_hourly['hour'].isin(selected_hours)]
+        df_aggregated = df_filtered.groupby('location_id', as_index=False)['trip_count'].sum()
+
+        hours_str = ', '.join([f"{h}:00" for h in sorted(selected_hours)])
+        title = f"Pickup Locations (Hours: {hours_str})"
+
+        return _build_map_figure(df_aggregated, title)
 
     return app
 
