@@ -1,4 +1,6 @@
 import calendar
+from pathlib import Path
+
 import numpy as np
 import dash
 from dash import dcc, html, callback
@@ -23,6 +25,79 @@ COLORS = {
     'weekday': '#4ECDC4',
     'weekend': '#FF6B6B'
 }
+
+# --- Helpers for Map Tiles / Zone labels -------------------------------------
+ASSETS_GEOJSON = Path("assets/taxi_zones.geojson")
+LOOKUP_CSV = Path("assets/taxi_zone_lookup.csv")
+
+
+def _bbox_centroid(coords):
+    """Centroid via bbox center (no heavy deps)."""
+    if not coords:
+        return None
+    lons = [c[0] for c in coords]
+    lats = [c[1] for c in coords]
+    return ((min(lons) + max(lons)) / 2.0, (min(lats) + max(lats)) / 2.0)
+
+
+def _extract_all_points(geometry):
+    """Flatten Polygon/MultiPolygon coords -> list of [lon, lat]."""
+    if not geometry or "type" not in geometry:
+        return []
+    gtype = geometry["type"]
+    coords = geometry.get("coordinates", [])
+    pts = []
+    if gtype == "Polygon":
+        for ring in coords:
+            pts.extend(ring)
+    elif gtype == "MultiPolygon":
+        for poly in coords:
+            for ring in poly:
+                pts.extend(ring)
+    return pts
+
+
+def _load_zone_centroids(geojson_path: Path = ASSETS_GEOJSON) -> dict[int, tuple[float, float]]:
+    """{LocationID: (lon, lat)} from assets/taxi_zones.geojson; {} on failure."""
+    try:
+        gj = json.loads(geojson_path.read_text())
+    except Exception as e:
+        print(f"[Map] Could not read {geojson_path}: {e}")
+        return {}
+    cent = {}
+    for f in gj.get("features", []):
+        props = f.get("properties", {}) or {}
+        loc = (props.get("LocationID") or props.get("locationid")
+               or props.get("location_id") or props.get("LOCATIONID"))
+        try:
+            loc = int(loc)
+        except Exception:
+            continue
+        c = _bbox_centroid(_extract_all_points(f.get("geometry", {})))
+        if c:
+            cent[loc] = c
+    print(f"[Map] Loaded {len(cent)} zone centroids from {geojson_path}")
+    return cent
+
+
+def _load_zone_lookup(path: Path = LOOKUP_CSV) -> tuple[dict[int, str], dict[int, str]]:
+    """
+    Return (name_map, borough_map) from taxi_zone_lookup.csv.
+    name_map[id] -> Zone, borough_map[id] -> Borough.
+    """
+    try:
+        df = pd.read_csv(path)
+        df = df.dropna(subset=["LocationID"])
+        df["LocationID"] = df["LocationID"].astype(int)
+        name_map = dict(zip(df["LocationID"], df["Zone"].astype(str)))
+        borough_map = dict(zip(df["LocationID"], df["Borough"].astype(str)))
+        print(f"[Map] Loaded {len(name_map)} zone labels from {path}")
+        return name_map, borough_map
+    except Exception as e:
+        print(f"[Map] Could not read {path}: {e}")
+        return {}, {}
+# -----------------------------------------------------------------------------
+
 
 def get_db_engine():
     if not hasattr(get_db_engine, 'engine'):
@@ -210,10 +285,26 @@ def load_data():
                 AND df.fare_amount IS NOT NULL
                 AND ft.trip_distance IS NOT NULL
               LIMIT 50000
-          """
+          """,
+        # New: counts for maps (all zones)
+        'pickup_counts_all': f"""
+             SELECT ft."PULocationID" AS location_id, COUNT(*) AS trip_count
+             FROM fact_trips ft
+             JOIN dim_datetime dd ON ft.datetime_id = dd.datetime_id
+             WHERE dd.year >= {YEAR_FILTER}
+             GROUP BY ft."PULocationID"
+         """,
+        'dropoff_counts_all': f"""
+             SELECT ft."DOLocationID" AS location_id, COUNT(*) AS trip_count
+             FROM fact_trips ft
+             JOIN dim_datetime dd ON ft.datetime_id = dd.datetime_id
+             WHERE dd.year >= {YEAR_FILTER}
+             GROUP BY ft."DOLocationID"
+         """,
     }
 
     return tuple(execute_query(q, engine) for q in queries.values())
+
 
 def create_chart_layout(title: str, xaxis: str, yaxis: str, height: int = 450):
     return dict(
@@ -235,8 +326,10 @@ def create_app():
     # Load all data
     (df_monthly, df_weekday, df_heatmap, df_fare_weekday,
      df_hourly, df_top_pickup, df_payment,
-     df_weather_monthly, df_weather_conditions, df_weather_scatter, df_correlation, df_clustering, df_cluster) = load_data()
+     df_weather_monthly, df_weather_conditions, df_weather_scatter, df_correlation, df_clustering, df_cluster,df_pickup_all, df_dropoff_all) = load_data()
 
+    # Load zone label maps once (for charts & hovers)
+    zone_name_map, zone_borough_map = _load_zone_lookup()
     # Prepare monthly data
     if not df_monthly.empty:
         df_monthly['year_month'] = pd.to_datetime(
@@ -251,6 +344,39 @@ def create_app():
         df_fare_weekday = df_fare_weekday.sort_values('day_of_week')
         df_fare_weekday['day_name'] = df_fare_weekday['day_of_week'].astype(int).map(lambda x: DAY_NAMES[x])
 
+    # Replace IDs with names for the Top 10 pickup chart (fallback to manual dict or ID)
+    manual_zone_names = {
+        132: 'JFK Airport',
+        138: 'LaGuardia Airport',
+        161: 'Midtown Center',
+        162: 'Midtown East',
+        163: 'Midtown North',
+        164: 'Midtown South',
+        186: 'Penn Station/Madison Sq West',
+        230: 'Times Sq/Theatre District',
+        236: 'Upper East Side North',
+        237: 'Upper East Side South',
+        142: 'Lincoln Square East',
+        239: 'Upper West Side North',
+        140: 'Lenox Hill West',
+        141: 'Lenox Hill East',
+        79: 'East Harlem North',
+        170: 'Murray Hill',
+        234: 'Union Sq',
+        48: 'Clinton East',
+        68: 'East Chelsea',
+        90: 'Financial District North'
+    }
+
+    def _label_for(lid: int) -> str:
+        name = zone_name_map.get(lid)
+        if name:
+            boro = zone_borough_map.get(lid)
+            return f"{name} ({boro})" if boro else name
+        # fallback to your manual dict, then to "Zone {id}"
+        return manual_zone_names.get(lid, f"Zone {lid}")
+
+    # ---------- Clustering ----------
     df_clustered = pd.DataFrame()
     cluster_stats = pd.DataFrame()
     cluster_hourly = pd.DataFrame()
@@ -268,7 +394,6 @@ def create_app():
         df_clustering['trip_cluster'] = kmeans.fit_predict(X_scaled)
 
         cluster_means = df_clustering.groupby('trip_cluster')[features].mean()
-
         cluster_order = cluster_means.mean(axis=1).sort_values()
         cluster_names = {
             cluster_order.index[0]: 'Economy / Short Trips',
@@ -327,6 +452,12 @@ def create_app():
         html.Div([
             html.Div([dcc.Graph(id='top-pickup-locations-chart')], style={'flex': '1'}),
             html.Div([dcc.Graph(id='vendor-distribution-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
+
+        # New: Maps row
+        html.Div([
+            html.Div([dcc.Graph(id='pickup-map')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='dropoff-map')], style={'flex': '1'}),
         ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
 
         html.Div([
@@ -513,6 +644,63 @@ def create_app():
             ))
         fig.update_layout(title_text='Payment Type Distribution', height=400)
         return fig
+
+    # ------------------- Maps -------------------
+
+    def _build_map_figure(df_counts: pd.DataFrame, title: str) -> go.Figure:
+        fig = go.Figure()
+        centroids = _load_zone_centroids()
+        if df_counts.empty or not centroids:
+            fig.update_layout(
+                mapbox_style="open-street-map",
+                mapbox_center={"lon": -73.9851, "lat": 40.7589},
+                mapbox_zoom=9, height=550, title=title,
+                margin=dict(l=10, r=10, t=50, b=10),
+            )
+            fig.add_annotation(text="No data or taxi_zones.geojson missing.",
+                               showarrow=False, x=0.5, y=0.5, xref="paper", yref="paper")
+            return fig
+
+        merged = df_counts.copy()
+        merged["location_id"] = merged["location_id"].astype(int)
+        merged["lon"] = merged["location_id"].map(lambda x: centroids.get(x, (None, None))[0])
+        merged["lat"] = merged["location_id"].map(lambda x: centroids.get(x, (None, None))[1])
+        before = len(merged)
+        merged = merged.dropna(subset=["lon", "lat"])
+        dropped = before - len(merged)
+        print(f"[Map] {title}: rows={before}, kept={len(merged)}, dropped(no centroid)={dropped}")
+
+        def _label(loc_id: int) -> str:
+            return _label_for(loc_id)
+
+        max_count = merged["trip_count"].max()
+        size = 6 + 20 * np.sqrt(merged["trip_count"] / max_count)
+
+        fig.add_trace(go.Scattermapbox(
+            lon=merged["lon"],
+            lat=merged["lat"],
+            mode="markers",
+            marker=dict(size=size, color=merged["trip_count"], colorscale="Viridis", showscale=True),
+            text=[f"{_label(lid)}<br>Trips: {cnt:,}" for lid, cnt in zip(merged["location_id"], merged["trip_count"])],
+            hoverinfo="text"
+        ))
+        fig.update_layout(
+            mapbox_style="open-street-map",
+            mapbox_center={"lon": -73.9851, "lat": 40.7589},
+            mapbox_zoom=9, height=550, title=title,
+            margin=dict(l=10, r=10, t=50, b=10),
+        )
+        return fig
+
+    @callback(Output('pickup-map', 'figure'), Input('pickup-map', 'id'))
+    def update_pickup_map(_):
+        return _build_map_figure(df_pickup_all, "Pickup Locations (All)")
+
+    @callback(Output('dropoff-map', 'figure'), Input('dropoff-map', 'id'))
+    def update_dropoff_map(_):
+        return _build_map_figure(df_dropoff_all, "Dropoff Locations (All)")
+
+    # ------------------- Weather / Correlation -------------------
 
     @callback(Output('weather-condition-chart', 'figure'), Input('weather-condition-chart', 'id'))
     def update_weather_condition_chart(_):
