@@ -196,7 +196,21 @@ def load_data():
                 AND ft.trip_distance > 0
                 AND ft.trip_distance < 100
                 AND df.fare_amount > 0
-        """
+        """,
+        'cluster_data': f"""
+              SELECT
+                  df.tip_amount,
+                  df.fare_amount,
+                  ft.trip_distance
+              FROM fact_trips ft
+              JOIN dim_fare df ON ft.fare_id = df.fare_id
+              JOIN dim_datetime dd ON ft.datetime_id = dd.datetime_id
+              WHERE dd.year >= {YEAR_FILTER}
+                AND df.tip_amount IS NOT NULL
+                AND df.fare_amount IS NOT NULL
+                AND ft.trip_distance IS NOT NULL
+              LIMIT 50000
+          """
     }
 
     return tuple(execute_query(q, engine) for q in queries.values())
@@ -221,7 +235,7 @@ def create_app():
     # Load all data
     (df_monthly, df_weekday, df_heatmap, df_fare_weekday,
      df_hourly, df_top_pickup, df_payment,
-     df_weather_monthly, df_weather_conditions, df_weather_scatter, df_correlation, df_clustering) = load_data()
+     df_weather_monthly, df_weather_conditions, df_weather_scatter, df_correlation, df_clustering, df_cluster) = load_data()
 
     # Prepare monthly data
     if not df_monthly.empty:
@@ -339,6 +353,11 @@ def create_app():
             html.Div([dcc.Graph(id='cluster-3d-scatter')], style={'width': '100%'}),
         ], style={'marginBottom': '20px'}),
 
+        # Tip clustering chart (new)
+        html.Div([
+            html.Div([dcc.Graph(id='tip-cluster-chart')],
+                     style={'width': '100%', 'display': 'inline-block', 'marginTop': '20px'}),
+        ]),
     ], style={'padding': '20px', 'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#fafafa'})
 
     @callback(Output('monthly-duration-chart', 'figure'), Input('monthly-duration-chart', 'id'))
@@ -734,6 +753,103 @@ def create_app():
             paper_bgcolor='white',
             plot_bgcolor='white'
         )
+        return fig
+
+        # Plot Fare vs Tip colored by cluster
+        fig.add_trace(go.Scatter(
+            x=df_tip['fare_amount'],
+            y=df_tip['tip_amount'],
+            mode='markers',
+            marker=dict(
+                size=7,
+                color=df_tip['cluster'],
+                colorscale='Viridis',
+                showscale=True,
+                colorbar=dict(title='Cluster')
+            ),
+            text=[
+                f"Fare: ${f:.2f}<br>Tip: ${t:.2f}<br>Distance: {d:.2f}"
+                for f, t, d in zip(df_tip['fare_amount'], df_tip['tip_amount'], df_tip['trip_distance'])
+            ],
+            hovertemplate="%{text}<extra></extra>"
+        ))
+
+        # Add cluster centroid markers (unscaled values)
+        centroids_plot = centroids_tip
+        fig.add_trace(go.Scatter(
+            x=centroids_plot['fare_amount'],
+            y=centroids_plot['tip_amount'],
+            mode='markers+text',
+            marker=dict(size=14, symbol='x', color='black'),
+            text=[label_map_tip.get(i, f'C{i}') for i in range(len(centroids_plot))],
+            textposition='top center',
+            name='Centroids',
+            hovertemplate='Centroid: Tip %{y:.2f}, Fare %{x:.2f}<extra></extra>'
+        ))
+
+        fig.update_layout(
+            **create_chart_layout('Tip Clustering — Fare vs Tip', 'Fare Amount ($)', 'Tip Amount ($)', 600))
+        return fig
+
+    @callback(Output('tip-cluster-chart', 'figure'), Input('tip-cluster-chart', 'id'))
+    def update_tip_cluster_chart(_):
+        fig = go.Figure()
+
+        if not df_cluster.empty:
+            from sklearn.cluster import KMeans
+
+            # Prepare features
+            features = ['fare_amount', 'tip_amount']
+            X = df_cluster[features].values
+
+            # Run KMeans
+            n_clusters = 3
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            clusters = kmeans.fit_predict(X)
+            df_cluster['cluster'] = clusters
+
+            # Count points per cluster
+            cluster_counts = df_cluster['cluster'].value_counts().sort_index()
+            total_points = len(df_cluster)
+
+            # Define colors for clusters
+            colors = ['#4ECDC4', '#FF6B6B', '#FFD93D']
+
+            # Plot points per cluster
+            for c in range(n_clusters):
+                cluster_data = df_cluster[df_cluster['cluster'] == c]
+                fig.add_trace(go.Scatter(
+                    x=cluster_data['fare_amount'],
+                    y=cluster_data['tip_amount'],
+                    mode='markers',
+                    marker=dict(color=colors[c], size=6),
+                    name=f'Cluster {c} ({cluster_counts[c]} points)'
+                ))
+
+            # Plot centroids
+            centroids = kmeans.cluster_centers_
+            fig.add_trace(go.Scatter(
+                x=centroids[:, 0],
+                y=centroids[:, 1],
+                mode='markers+text',
+                marker=dict(size=12, symbol='x', color='black'),
+                text=[f'C{i}' for i in range(n_clusters)],
+                textposition='top center',
+                name='Centroids'
+            ))
+
+            title_text = f'Tip Clustering — Fare vs Tip (Total: {total_points:,} points)'
+        else:
+            title_text = 'Tip Clustering — Fare vs Tip (No data)'
+
+        fig.update_layout(
+            title=title_text,
+            xaxis_title='Fare Amount ($)',
+            yaxis_title='Tip Amount ($)',
+            template='plotly_white',
+            height=600
+        )
+
         return fig
 
     return app
