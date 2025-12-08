@@ -25,3 +25,8 @@ sqlalchemy>=2.0.0
 tqdm>=4.65.0
 dash>=2.14.0
 plotly>=5.17.0
+
+
+# Geometry conversion (TLC shapefile -> GeoJSON with WGS84 reprojection)
+pyshp>=2.3.1
+pyproj>=3.6.1
