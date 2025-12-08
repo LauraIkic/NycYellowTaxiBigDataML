@@ -127,3 +127,6 @@ python run.py --stop
 ```
 
 Dies stoppt alle Docker Container und beendet das Dashboard.
+
+## Unzip taxi zones geo points
+python convert_taxi_zones.py assets/taxi_zones.zip
