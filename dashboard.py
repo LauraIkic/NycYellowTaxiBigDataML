@@ -12,7 +12,11 @@ from sqlalchemy import text
 from db_connection import DBConnection
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-from datetime import datetime, timedelta
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+from sklearn.preprocessing import LabelEncoder
 
 # Constants
 YEAR_FILTER = 2025
@@ -97,6 +101,8 @@ def _load_zone_lookup(path: Path = LOOKUP_CSV) -> tuple[dict[int, str], dict[int
     except Exception as e:
         print(f"[Map] Could not read {path}: {e}")
         return {}, {}
+
+
 # -----------------------------------------------------------------------------
 
 
@@ -105,6 +111,7 @@ def get_db_engine():
         db = DBConnection("postgres", "password123", "localhost", 5433, "ny_taxi_dwh")
         get_db_engine.engine = db.connect()
     return get_db_engine.engine
+
 
 def execute_query(query: str, engine) -> pd.DataFrame:
     if engine is None:
@@ -115,6 +122,7 @@ def execute_query(query: str, engine) -> pd.DataFrame:
     except Exception as e:
         print(f"Query error: {e}")
         return pd.DataFrame()
+
 
 def load_data():
     engine = get_db_engine()
@@ -287,6 +295,35 @@ def load_data():
                 AND ft.trip_distance IS NOT NULL
               LIMIT 50000
           """,
+        'regression_data': f"""
+              SELECT
+                  ft.trip_duration_min,
+                  ft.trip_distance,
+                  ft.passenger_count,
+                  df.fare_amount,
+                  df.tip_amount,
+                  df.total_amount,
+                  dw.temp,
+                  dw.precip,
+                  dw.humidity,
+                  dw.windspeed,
+                  dw.visibility,
+                  dw.conditions,
+                  dd.hour,
+                  EXTRACT(DOW FROM dd.full_datetime)::int as day_of_week
+              FROM fact_trips ft
+              JOIN dim_datetime dd ON ft.datetime_id = dd.datetime_id
+              JOIN dim_fare df ON ft.fare_id = df.fare_id
+              LEFT JOIN dim_weather dw ON ft.datetime_id = dw.datetime_id
+              WHERE dd.year >= {YEAR_FILTER}
+                AND ft.trip_duration_min IS NOT NULL
+                AND ft.trip_distance IS NOT NULL
+                AND ft.trip_duration_min > 0
+                AND ft.trip_duration_min < 180
+                AND ft.trip_distance > 0
+                AND dw.temp IS NOT NULL
+              LIMIT 100000
+          """,
         # New: counts for maps (all zones)
         'pickup_counts_all': f"""
              SELECT ft."PULocationID" AS location_id, COUNT(*) AS trip_count
@@ -318,8 +355,10 @@ def create_chart_layout(title: str, xaxis: str, yaxis: str, height: int = 450):
         margin=dict(l=50, r=50, t=50, b=50)
     )
 
+
 def safe_agg(series, func, default=0.0):
     return func(series) if not series.empty and not series.isna().all() else default
+
 
 def create_app():
     app = dash.Dash(__name__)
@@ -327,7 +366,8 @@ def create_app():
     # Load all data
     (df_monthly, df_weekday, df_heatmap, df_fare_weekday,
      df_hourly, df_top_pickup, df_payment,
-     df_weather_monthly, df_weather_conditions, df_weather_scatter, df_correlation, df_clustering, df_cluster,df_pickup_all, df_dropoff_all) = load_data()
+     df_weather_monthly, df_weather_conditions, df_weather_scatter, df_correlation, df_clustering, df_cluster,
+     df_regression, df_pickup_all, df_dropoff_all) = load_data()
 
     # Load zone label maps once (for charts & hovers)
     zone_name_map, zone_borough_map = _load_zone_lookup()
@@ -413,7 +453,88 @@ def create_app():
         cluster_hourly = df_clustering.groupby(['hour', 'trip_type']).size().reset_index(name='count')
 
         df_clustered = df_clustering
-        print(f"Clustering complete: {len(df_clustered):,} records - Economy: {len(df_clustered[df_clustered['trip_type']=='Economy / Short Trips']):,} | Premium: {len(df_clustered[df_clustered['trip_type']=='Premium / Long Trips']):,}")
+        print(
+            f"Clustering complete: {len(df_clustered):,} records - Economy: {len(df_clustered[df_clustered['trip_type'] == 'Economy / Short Trips']):,} | Premium: {len(df_clustered[df_clustered['trip_type'] == 'Premium / Long Trips']):,}")
+
+    # ---------- Regression Analysis ----------
+    regression_results = {}
+    df_reg_pred = pd.DataFrame()
+    feature_importance = pd.DataFrame()
+
+    if not df_regression.empty:
+        print(f"Regression: Loaded {len(df_regression):,} records")
+
+        # Prepare features
+        df_reg = df_regression.copy()
+
+        # Encode categorical variable (conditions)
+        le = LabelEncoder()
+        df_reg['conditions_encoded'] = le.fit_transform(df_reg['conditions'].fillna('Unknown'))
+
+        # Select features and target
+        feature_cols = ['temp', 'precip', 'humidity', 'windspeed', 'visibility',
+                        'conditions_encoded', 'hour', 'day_of_week', 'passenger_count', 'trip_distance']
+        target_col = 'trip_duration_min'
+
+        # Remove rows with missing values
+        df_reg_clean = df_reg[feature_cols + [target_col]].dropna()
+
+        X = df_reg_clean[feature_cols]
+        y = df_reg_clean[target_col]
+
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        print(f"Regression: Training set size: {len(X_train):,}, Test set size: {len(X_test):,}")
+
+        # Train multiple models
+        models = {
+            'Linear Regression': LinearRegression(),
+            'Ridge Regression': Ridge(alpha=1.0),
+            'Lasso Regression': Lasso(alpha=0.1),
+            'Random Forest': RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1),
+            'Gradient Boosting': GradientBoostingRegressor(n_estimators=100, max_depth=5, random_state=42)
+        }
+
+        for name, model in models.items():
+            print(f"Training {name}...")
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+
+            mse = mean_squared_error(y_test, y_pred)
+            rmse = np.sqrt(mse)
+            mae = mean_absolute_error(y_test, y_pred)
+            r2 = r2_score(y_test, y_pred)
+
+            regression_results[name] = {
+                'RMSE': rmse,
+                'MAE': mae,
+                'R²': r2,
+                'model': model
+            }
+
+            print(f"{name}: RMSE={rmse:.2f}, MAE={mae:.2f}, R²={r2:.4f}")
+
+        # Use best model for predictions
+        best_model_name = max(regression_results.keys(), key=lambda k: regression_results[k]['R²'])
+        best_model = regression_results[best_model_name]['model']
+
+        # Create prediction DataFrame
+        y_pred_best = best_model.predict(X_test)
+        df_reg_pred = pd.DataFrame({
+            'actual': y_test.values,
+            'predicted': y_pred_best
+        })
+
+        # Feature importance (for tree-based models)
+        if hasattr(best_model, 'feature_importances_'):
+            feature_importance = pd.DataFrame({
+                'feature': feature_cols,
+                'importance': best_model.feature_importances_
+            }).sort_values('importance', ascending=False)
+            print(f"Feature importance calculated for {best_model_name}")
+
+        print(f"Regression complete: Best model is {best_model_name}")
 
     kpis = {
         'avg_duration': safe_agg(df_monthly.get('avg_duration', pd.Series()), lambda s: s.mean()),
@@ -429,10 +550,10 @@ def create_app():
                 html.H2(value, style={'color': color}),
             ], style={'flex': '1', 'textAlign': 'center', 'padding': '20px',
                       'backgroundColor': '#f0f0f0', 'borderRadius': '10px', 'margin': '10px'})
-            for title, value, color in [
-                ("Avg Trip Duration", f"{kpis['avg_duration']:.1f} Min", COLORS['primary']),
-                ("Total Trips", f"{kpis['total_trips']:,}", COLORS['danger']),
-            ]]
+                for title, value, color in [
+                    ("Avg Trip Duration", f"{kpis['avg_duration']:.1f} Min", COLORS['primary']),
+                    ("Total Trips", f"{kpis['total_trips']:,}", COLORS['danger']),
+                ]]
         ], style={'display': 'flex', 'justifyContent': 'space-around', 'marginBottom': '30px', 'flexWrap': 'wrap'}),
 
         html.Div([
@@ -470,7 +591,8 @@ def create_app():
             html.Div([dcc.Graph(id='correlation-matrix-chart')], style={'width': '100%'}),
         ], style={'marginBottom': '20px'}),
 
-        html.H2("Trip Type Clustering Analysis", style={'textAlign': 'center', 'marginTop': 40, 'marginBottom': 20, 'color': '#333'}),
+        html.H2("Trip Type Clustering Analysis",
+                style={'textAlign': 'center', 'marginTop': 40, 'marginBottom': 20, 'color': '#333'}),
 
         html.Div([
             html.Div([dcc.Graph(id='cluster-distribution-chart')], style={'flex': '1'}),
@@ -485,11 +607,25 @@ def create_app():
             html.Div([dcc.Graph(id='cluster-3d-scatter')], style={'width': '100%'}),
         ], style={'marginBottom': '20px'}),
 
-        # Tip clustering chart (new)
+        # Tip clustering chart
         html.Div([
             html.Div([dcc.Graph(id='tip-cluster-chart')],
                      style={'width': '100%', 'display': 'inline-block', 'marginTop': '20px'}),
         ]),
+
+        # Regression Analysis Section
+        html.H2("Supervised Learning: Trip Duration Prediction (Weather & Trip Features)",
+                style={'textAlign': 'center', 'marginTop': 60, 'marginBottom': 20, 'color': '#333'}),
+
+        html.Div([
+            html.Div([dcc.Graph(id='regression-comparison-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='regression-predictions-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
+
+        html.Div([
+            html.Div([dcc.Graph(id='feature-importance-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='residuals-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
     ], style={'padding': '20px', 'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#fafafa'})
 
     @callback(Output('monthly-duration-chart', 'figure'), Input('monthly-duration-chart', 'id'))
@@ -522,7 +658,8 @@ def create_app():
                 marker_color=colors,
                 hovertemplate='<b>%{x}</b><br>Avg Duration: %{y:.1f} Min<extra></extra>'
             ))
-        fig.update_layout(**create_chart_layout('Average Trip Duration by Day of Week', 'Day of Week', 'Trip Duration (Minutes)'))
+        fig.update_layout(
+            **create_chart_layout('Average Trip Duration by Day of Week', 'Day of Week', 'Trip Duration (Minutes)'))
         return fig
 
     @callback(Output('heatmap-chart', 'figure'), Input('heatmap-chart', 'id'))
@@ -628,7 +765,8 @@ def create_app():
                 y=df_sorted['zone_name'],
                 orientation='h',
                 marker_color=COLORS['primary'],
-                hovertemplate='<b>%{y}</b><br>Trips: %{x:,}<br>Location ID: ' + df_sorted['pulocationid'].astype(str) + '<extra></extra>'
+                hovertemplate='<b>%{y}</b><br>Trips: %{x:,}<br>Location ID: ' + df_sorted['pulocationid'].astype(
+                    str) + '<extra></extra>'
             ))
         fig.update_layout(**create_chart_layout('Top 10 Pickup Locations', 'Number of Trips', 'Zone'))
         return fig
@@ -805,7 +943,7 @@ def create_app():
         fig = go.Figure()
         if not cluster_stats.empty:
             cluster_info = [f"{cluster}<br>({int(cluster_stats.loc[cluster, 'count']):,} trips)"
-                          for cluster in cluster_stats.index]
+                            for cluster in cluster_stats.index]
 
             fig.add_trace(go.Bar(
                 name='Avg Distance (mi)',
@@ -944,42 +1082,6 @@ def create_app():
         )
         return fig
 
-        # Plot Fare vs Tip colored by cluster
-        fig.add_trace(go.Scatter(
-            x=df_tip['fare_amount'],
-            y=df_tip['tip_amount'],
-            mode='markers',
-            marker=dict(
-                size=7,
-                color=df_tip['cluster'],
-                colorscale='Viridis',
-                showscale=True,
-                colorbar=dict(title='Cluster')
-            ),
-            text=[
-                f"Fare: ${f:.2f}<br>Tip: ${t:.2f}<br>Distance: {d:.2f}"
-                for f, t, d in zip(df_tip['fare_amount'], df_tip['tip_amount'], df_tip['trip_distance'])
-            ],
-            hovertemplate="%{text}<extra></extra>"
-        ))
-
-        # Add cluster centroid markers (unscaled values)
-        centroids_plot = centroids_tip
-        fig.add_trace(go.Scatter(
-            x=centroids_plot['fare_amount'],
-            y=centroids_plot['tip_amount'],
-            mode='markers+text',
-            marker=dict(size=14, symbol='x', color='black'),
-            text=[label_map_tip.get(i, f'C{i}') for i in range(len(centroids_plot))],
-            textposition='top center',
-            name='Centroids',
-            hovertemplate='Centroid: Tip %{y:.2f}, Fare %{x:.2f}<extra></extra>'
-        ))
-
-        fig.update_layout(
-            **create_chart_layout('Tip Clustering — Fare vs Tip', 'Fare Amount ($)', 'Tip Amount ($)', 600))
-        return fig
-
     @callback(Output('tip-cluster-chart', 'figure'), Input('tip-cluster-chart', 'id'))
     def update_tip_cluster_chart(_):
         fig = go.Figure()
@@ -1041,7 +1143,173 @@ def create_app():
 
         return fig
 
+    # ------------------- Regression Callbacks -------------------
+
+    @callback(Output('regression-comparison-chart', 'figure'), Input('regression-comparison-chart', 'id'))
+    def update_regression_comparison(_):
+        fig = go.Figure()
+
+        if regression_results:
+            model_names = list(regression_results.keys())
+            rmse_values = [regression_results[m]['RMSE'] for m in model_names]
+            mae_values = [regression_results[m]['MAE'] for m in model_names]
+            r2_values = [regression_results[m]['R²'] for m in model_names]
+
+            fig.add_trace(go.Bar(
+                name='RMSE (min)',
+                x=model_names,
+                y=rmse_values,
+                marker_color='#FF6B6B',
+                yaxis='y',
+                hovertemplate='RMSE: %{y:.2f} min<extra></extra>'
+            ))
+
+            fig.add_trace(go.Bar(
+                name='MAE (min)',
+                x=model_names,
+                y=mae_values,
+                marker_color='#4ECDC4',
+                yaxis='y',
+                hovertemplate='MAE: %{y:.2f} min<extra></extra>'
+            ))
+
+            fig.add_trace(go.Scatter(
+                name='R² Score',
+                x=model_names,
+                y=r2_values,
+                mode='lines+markers',
+                marker=dict(size=12, color='#FFD93D'),
+                line=dict(width=3),
+                yaxis='y2',
+                hovertemplate='R²: %{y:.4f}<extra></extra>'
+            ))
+
+        fig.update_layout(
+            title='Regression Model Performance Comparison',
+            xaxis_title='Model',
+            yaxis=dict(title='Error (minutes)', side='left'),
+            yaxis2=dict(title='R² Score', side='right', overlaying='y', range=[0, 1]),
+            barmode='group',
+            height=450,
+            template='plotly_white',
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+            hovermode='x unified'
+        )
+        return fig
+
+    @callback(Output('regression-predictions-chart', 'figure'), Input('regression-predictions-chart', 'id'))
+    def update_regression_predictions(_):
+        fig = go.Figure()
+
+        if not df_reg_pred.empty:
+            # Sample data for visualization if too many points
+            df_plot = df_reg_pred.sample(min(5000, len(df_reg_pred)), random_state=42)
+
+            # Scatter plot
+            fig.add_trace(go.Scatter(
+                x=df_plot['actual'],
+                y=df_plot['predicted'],
+                mode='markers',
+                marker=dict(size=5, color='#4ECDC4', opacity=0.5),
+                name='Predictions',
+                hovertemplate='Actual: %{x:.1f} min<br>Predicted: %{y:.1f} min<extra></extra>'
+            ))
+
+            # Perfect prediction line
+            max_val = max(df_plot['actual'].max(), df_plot['predicted'].max())
+            fig.add_trace(go.Scatter(
+                x=[0, max_val],
+                y=[0, max_val],
+                mode='lines',
+                line=dict(color='red', dash='dash', width=2),
+                name='Perfect Prediction',
+                hoverinfo='skip'
+            ))
+
+        fig.update_layout(
+            title='Actual vs Predicted Trip Duration (Best Model)',
+            xaxis_title='Actual Duration (minutes)',
+            yaxis_title='Predicted Duration (minutes)',
+            height=450,
+            template='plotly_white',
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+        )
+        return fig
+
+    @callback(Output('feature-importance-chart', 'figure'), Input('feature-importance-chart', 'id'))
+    def update_feature_importance(_):
+        fig = go.Figure()
+
+        if not feature_importance.empty:
+            # Map feature names to readable labels
+            feature_labels = {
+                'temp': 'Temperature',
+                'precip': 'Precipitation',
+                'humidity': 'Humidity',
+                'windspeed': 'Wind Speed',
+                'visibility': 'Visibility',
+                'conditions_encoded': 'Weather Conditions',
+                'hour': 'Hour of Day',
+                'day_of_week': 'Day of Week',
+                'passenger_count': 'Passenger Count',
+                'trip_distance': 'Trip Distance'
+            }
+
+            df_imp = feature_importance.copy()
+            df_imp['feature_label'] = df_imp['feature'].map(feature_labels)
+
+            fig.add_trace(go.Bar(
+                x=df_imp['importance'],
+                y=df_imp['feature_label'],
+                orientation='h',
+                marker_color='#FF6B6B',
+                hovertemplate='%{y}<br>Importance: %{x:.4f}<extra></extra>'
+            ))
+
+        fig.update_layout(
+            title='Feature Importance (Best Model)',
+            xaxis_title='Importance Score',
+            yaxis_title='Feature',
+            height=450,
+            template='plotly_white',
+            margin=dict(l=150, r=50, t=60, b=60)
+        )
+        return fig
+
+    @callback(Output('residuals-chart', 'figure'), Input('residuals-chart', 'id'))
+    def update_residuals(_):
+        fig = go.Figure()
+
+        if not df_reg_pred.empty:
+            # Calculate residuals
+            df_plot = df_reg_pred.copy()
+            df_plot['residual'] = df_plot['actual'] - df_plot['predicted']
+
+            # Sample for visualization
+            df_plot = df_plot.sample(min(5000, len(df_plot)), random_state=42)
+
+            fig.add_trace(go.Scatter(
+                x=df_plot['predicted'],
+                y=df_plot['residual'],
+                mode='markers',
+                marker=dict(size=5, color='#4ECDC4', opacity=0.5),
+                hovertemplate='Predicted: %{x:.1f} min<br>Residual: %{y:.1f} min<extra></extra>'
+            ))
+
+            # Zero line
+            fig.add_hline(y=0, line_dash="dash", line_color="red", line_width=2)
+
+        fig.update_layout(
+            title='Residual Plot (Prediction Errors)',
+            xaxis_title='Predicted Duration (minutes)',
+            yaxis_title='Residual (Actual - Predicted)',
+            height=450,
+            template='plotly_white'
+        )
+        return fig
+
     return app
+
 
 if __name__ == '__main__':
     app = create_app()
