@@ -5,14 +5,15 @@ from pathlib import Path
 import numpy as np
 import dash
 from dash import dcc, html, callback
-from dash.dependencies import Input, Output, State, ALL
+from dash.dependencies import Input, Output
 import plotly.graph_objects as go
 import pandas as pd
 from sqlalchemy import text
 from db_connection import DBConnection
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-from datetime import datetime, timedelta
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import train_test_split
 
 # Constants
 YEAR_FILTER = 2025
@@ -223,14 +224,20 @@ def load_data():
             ORDER BY trip_count DESC
         """,
         'weather_scatter': f"""
-            SELECT dw.temp,
-                   COUNT(ft.datetime_id) as trip_count
-            FROM dim_weather dw
-            LEFT JOIN fact_trips ft ON ft.datetime_id = dw.datetime_id
-            JOIN dim_datetime dd ON dw.datetime_id = dd.datetime_id
+            SELECT 
+                dw.datetime_id,
+                dd.date,
+                dd.hour,
+                dw.temp,
+                COUNT(*) as trip_count
+            FROM fact_trips ft
+            JOIN dim_weather dw ON ft.datetime_id = dw.datetime_id
+            JOIN dim_datetime dd ON ft.datetime_id = dd.datetime_id
             WHERE dd.year >= {YEAR_FILTER}
-            GROUP BY dw.temp
-            ORDER BY dw.temp
+                AND dw.temp IS NOT NULL
+            GROUP BY dw.datetime_id, dd.date, dd.hour, dw.temp
+            ORDER BY dw.datetime_id
+            LIMIT 10000
         """,
         'correlation': f"""
             SELECT
@@ -246,12 +253,14 @@ def load_data():
             FROM fact_trips ft
             JOIN dim_datetime dd ON ft.datetime_id = dd.datetime_id
             JOIN dim_fare df ON ft.fare_id = df.fare_id
-            LEFT JOIN dim_weather dw ON ft.datetime_id = dw.datetime_id
+            INNER JOIN dim_weather dw ON ft.datetime_id = dw.datetime_id
             WHERE dd.year >= {YEAR_FILTER}
                 AND ft.trip_duration_min IS NOT NULL
                 AND ft.trip_distance IS NOT NULL
                 AND df.fare_amount IS NOT NULL
                 AND df.tip_amount IS NOT NULL
+                AND dw.temp IS NOT NULL
+                AND dw.precip IS NOT NULL
             LIMIT 50000
         """,
         'clustering': f"""
@@ -272,6 +281,7 @@ def load_data():
                 AND ft.trip_distance > 0
                 AND ft.trip_distance < 100
                 AND df.fare_amount > 0
+                LIMIT 50000
         """,
         'cluster_data': f"""
               SELECT
@@ -328,6 +338,14 @@ def create_app():
     (df_monthly, df_weekday, df_heatmap, df_fare_weekday,
      df_hourly, df_top_pickup, df_payment,
      df_weather_monthly, df_weather_conditions, df_weather_scatter, df_correlation, df_clustering, df_cluster,df_pickup_all, df_dropoff_all) = load_data()
+
+    # Debug output
+    print(f"[LOAD_DATA] df_weather_scatter shape: {df_weather_scatter.shape}")
+    if not df_weather_scatter.empty:
+        print(f"[LOAD_DATA] df_weather_scatter columns: {df_weather_scatter.columns.tolist()}")
+        print(f"[LOAD_DATA] df_weather_scatter first rows:\n{df_weather_scatter.head()}")
+    else:
+        print("[LOAD_DATA] WARNING: df_weather_scatter is EMPTY!")
 
     # Load zone label maps once (for charts & hovers)
     zone_name_map, zone_borough_map = _load_zone_lookup()
@@ -391,7 +409,7 @@ def create_app():
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
-        kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
+        kmeans = KMeans(n_clusters=2, n_init=10)
         df_clustering['trip_cluster'] = kmeans.fit_predict(X_scaled)
 
         cluster_means = df_clustering.groupby('trip_cluster')[features].mean()
@@ -464,6 +482,13 @@ def create_app():
         html.Div([
             html.Div([dcc.Graph(id='weather-condition-chart')], style={'flex': '1'}),
             html.Div([dcc.Graph(id='weather-scatter-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
+
+        html.H2("Machine Learning: Polynomial Regression", style={'textAlign': 'center', 'marginTop': 40, 'marginBottom': 20, 'color': '#333'}),
+
+        html.Div([
+            html.Div([dcc.Graph(id='ml-polynomial-regression-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='ml-actual-vs-predicted-chart')], style={'flex': '1'}),
         ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
 
         html.Div([
@@ -725,9 +750,218 @@ def create_app():
                 y=df_weather_scatter['trip_count'],
                 mode='markers',
                 marker=dict(size=10, color=df_weather_scatter['trip_count'], colorscale='Viridis', showscale=True),
-                hovertemplate='Temp: %{x}°C<br>Trips: %{y:,}<extra></extra>'
+                hovertemplate='Temp: %{x}°F<br>Trips: %{y:,}<extra></extra>'
             ))
-        fig.update_layout(**create_chart_layout('Trips vs Temperature', 'Temperature (°C)', 'Number of Trips', 500))
+        fig.update_layout(**create_chart_layout('Trips vs Temperature', 'Temperature (°F)', 'Number of Trips', 500))
+        return fig
+
+    @callback(Output('ml-polynomial-regression-chart', 'figure'), Input('ml-polynomial-regression-chart', 'id'))
+    def update_ml_polynomial_regression(_):
+        fig = go.Figure()
+
+        if not df_weather_scatter.empty and len(df_weather_scatter) > 10:
+            # X = Temperature per hour
+            # Y = Number of trips in that hour
+
+            df_filtered = df_weather_scatter[df_weather_scatter['trip_count'] > 0].copy()
+
+            if len(df_filtered) < 10:
+                df_filtered = df_weather_scatter.copy()
+
+            X = df_filtered['temp'].values.reshape(-1, 1)
+            y = df_filtered['trip_count'].values
+
+            # Train/Test Split (70/30)
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
+
+            # Polynomial Features
+            poly = PolynomialFeatures(degree=2, include_bias=False)
+            X_train_poly = poly.fit_transform(X_train)
+            X_test_poly = poly.transform(X_test)
+
+            # Train Polynomial Regression Model
+            poly_reg_model = LinearRegression()
+            poly_reg_model.fit(X_train_poly, y_train)
+
+            # Transform full dataset for prediction and scoring
+            X_poly = poly.transform(X)
+
+            # Calculate coefficient of determination (R²)
+            r_sq = poly_reg_model.score(X_poly, y)
+            print(f"\n=== Polynomial Regression Results ===")
+            print(f"coefficient of determination: {r_sq:.4f}")
+            print(f"Data points used: {len(X)} (filtered from {len(df_weather_scatter)})")
+            print(f"Temperature range: {X.min():.1f}°F to {X.max():.1f}°F")
+            print(f"Trip count range: {y.min():,.0f} to {y.max():,.0f}")
+            print(f"Avg trips per hour: {y.mean():,.0f}")
+            print(f"Correlation temp vs trips: {np.corrcoef(X.flatten(), y)[0,1]:.4f}")
+            print(f"====================================\n")
+
+            # Predictions
+            y_train_pred = poly_reg_model.predict(X_train_poly)
+            y_test_pred = poly_reg_model.predict(X_test_poly)
+
+            # Add test data scatter
+            fig.add_trace(go.Scatter(
+                x=X_test.flatten(),
+                y=y_test,
+                mode='markers',
+                name='Test Data (30%)',
+                marker=dict(size=8, color='#ff7f0e', opacity=0.6),
+                hovertemplate='Temp: %{x:.1f}°F<br>Trips: %{y:,.0f}<extra></extra>'
+            ))
+
+            # Add training data scatter
+            fig.add_trace(go.Scatter(
+                x=X_train.flatten(),
+                y=y_train,
+                mode='markers',
+                name='Training Data (70%)',
+                marker=dict(size=8, color='#1f77b4', opacity=0.6),
+                hovertemplate='Temp: %{x:.1f}°F<br>Trips: %{y:,.0f}<extra></extra>'
+            ))
+
+            # Update layout with scores
+            fig.update_layout(
+                title=f'Temperature vs Trip Count - Polynomial Regression (Degree 2)<br>' +
+                      f'<sub>Coefficient of Determination (R²): {r_sq:.4f}</sub>',
+                xaxis_title='Temperature (°F)',
+                yaxis_title='Number of Trips',
+                height=600,
+                template='plotly_white',
+                showlegend=True,
+                legend=dict(
+                    yanchor="top",
+                    y=0.99,
+                    xanchor="left",
+                    x=0.01
+                ),
+                hovermode='closest'
+            )
+        else:
+            fig.update_layout(
+                title='Polynomial Regression - Insufficient Data',
+                xaxis_title='Temperature (F)',
+                yaxis_title='Number of Trips',
+                height=600,
+                template='plotly_white',
+                annotations=[{
+                    'text': 'Not enough data points for regression analysis',
+                    'xref': 'paper',
+                    'yref': 'paper',
+                    'x': 0.5,
+                    'y': 0.5,
+                    'showarrow': False,
+                    'font': {'size': 16, 'color': 'gray'}
+                }]
+            )
+
+        return fig
+
+    @callback(Output('ml-actual-vs-predicted-chart', 'figure'), Input('ml-actual-vs-predicted-chart', 'id'))
+    def update_ml_actual_vs_predicted(_):
+        fig = go.Figure()
+
+        if not df_weather_scatter.empty and len(df_weather_scatter) > 50:
+            # Expand aggregated data same as first chart
+            df_filtered = df_weather_scatter[df_weather_scatter['trip_count'] > 0].copy()
+
+            if len(df_filtered) < 10:
+                df_filtered = df_weather_scatter.copy()
+
+            # Use aggregated hourly data directly
+            X = df_filtered['temp'].values.reshape(-1, 1)
+            y = df_filtered['trip_count'].values
+
+            # Train/Test Split (70/30)
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
+
+            # Polynomial Features (degree=2)
+            poly = PolynomialFeatures(degree=2, include_bias=False)
+            X_train_poly = poly.fit_transform(X_train)
+            X_test_poly = poly.transform(X_test)
+
+            # Train Polynomial Regression Model
+            poly_reg_model = LinearRegression()
+            poly_reg_model.fit(X_train_poly, y_train)
+
+            # Transform full dataset for prediction and scoring
+            X_poly = poly.transform(X)
+            y_pred_full = poly_reg_model.predict(X_poly)
+
+            # Calculate coefficient of determination (R²)
+            r_sq = poly_reg_model.score(X_poly, y)
+
+            # Predictions
+            y_train_pred = poly_reg_model.predict(X_train_poly)
+            y_test_pred = poly_reg_model.predict(X_test_poly)
+
+            # plt.scatter(y_test, pred, color='r') - Test data actual vs predicted FIRST
+            fig.add_trace(go.Scatter(
+                x=y_test,
+                y=y_test_pred,
+                mode='markers',
+                name='Test Data (30%)',
+                marker=dict(size=8, color='red', opacity=0.6),
+                hovertemplate='Actual: %{x:,.0f}<br>Predicted: %{y:,.0f}<extra></extra>'
+            ))
+
+            # plt.scatter(y, poly_reg_model.predict(x), color='g') - Training data actual vs predicted SECOND
+            fig.add_trace(go.Scatter(
+                x=y_train,
+                y=y_train_pred,
+                mode='markers',
+                name='Training Data (70%)',
+                marker=dict(size=8, color='green', opacity=0.6),
+                hovertemplate='Actual: %{x:,.0f}<br>Predicted: %{y:,.0f}<extra></extra>'
+            ))
+
+            # Add perfect prediction line (diagonal)
+            min_val = min(y.min(), y_pred_full.min())
+            max_val = max(y.max(), y_pred_full.max())
+            fig.add_trace(go.Scatter(
+                x=[min_val, max_val],
+                y=[min_val, max_val],
+                mode='lines',
+                name='Perfect Prediction',
+                line=dict(color='black', width=2, dash='dash'),
+                hovertemplate='Perfect Prediction Line<extra></extra>'
+            ))
+
+            fig.update_layout(
+                title=f'Actual vs Predicted Trip Count<br>' +
+                      f'<sub>Coefficient of Determination (R²): {r_sq:.4f}</sub>',
+                xaxis_title='Actual Number of Trips',
+                yaxis_title='Predicted Number of Trips',
+                height=600,
+                template='plotly_white',
+                showlegend=True,
+                legend=dict(
+                    yanchor="top",
+                    y=0.99,
+                    xanchor="left",
+                    x=0.01
+                ),
+                hovermode='closest'
+            )
+        else:
+            fig.update_layout(
+                title='Actual vs Predicted - Insufficient Data',
+                xaxis_title='Actual Number of Trips',
+                yaxis_title='Predicted Number of Trips',
+                height=600,
+                template='plotly_white',
+                annotations=[{
+                    'text': 'Not enough data points for regression analysis',
+                    'xref': 'paper',
+                    'yref': 'paper',
+                    'x': 0.5,
+                    'y': 0.5,
+                    'showarrow': False,
+                    'font': {'size': 16, 'color': 'gray'}
+                }]
+            )
+
         return fig
 
     @callback(Output('correlation-matrix-chart', 'figure'), Input('correlation-matrix-chart', 'id'))
@@ -889,7 +1123,7 @@ def create_app():
                 proportion = cluster_size / len(df_clustered)
                 samples_for_cluster = max(int(max_total * proportion), 100)
 
-                sampled = cluster_data.sample(min(samples_for_cluster, cluster_size), random_state=42)
+                sampled = cluster_data.sample(min(samples_for_cluster, cluster_size))
                 df_sample_list.append(sampled)
 
             df_sample = pd.concat(df_sample_list, ignore_index=True)
@@ -993,7 +1227,7 @@ def create_app():
 
             # Run KMeans
             n_clusters = 3
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            kmeans = KMeans(n_clusters=n_clusters, n_init=10)
             clusters = kmeans.fit_predict(X)
             df_cluster['cluster'] = clusters
 
