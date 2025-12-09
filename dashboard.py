@@ -556,14 +556,14 @@ def create_app():
             regression_results[name] = {
                 'RMSE': rmse,
                 'MAE': mae,
-                'R²': r2,
+                'R2': r2,
                 'model': model
             }
 
             print(f"{name}: RMSE={rmse:.2f}, MAE={mae:.2f}, R2={r2:.4f}")
 
         # Use best model for predictions
-        best_model_name = max(regression_results.keys(), key=lambda k: regression_results[k]['R²'])
+        best_model_name = max(regression_results.keys(), key=lambda k: regression_results[k]['R2'])
         best_model = regression_results[best_model_name]['model']
 
         # Create prediction DataFrame
@@ -1454,7 +1454,7 @@ def create_app():
 
         best_r2 = 0
         if regression_results:
-            best_model_name = max(regression_results.keys(), key=lambda k: regression_results[k]['R²'])
+            best_model_name = max(regression_results.keys(), key=lambda k: regression_results[k]['R2'])
             best_r2 = regression_results[best_model_name]['R2']
 
         if not df_reg_pred.empty:
