@@ -235,9 +235,21 @@ def load_data():
         """,
         'weather_scatter': f"""
             SELECT 
-                dw.datetime_id,
-                dd.date,
-                dd.hour,
+                ft.trip_distance,
+                ft.trip_duration_min
+            FROM fact_trips ft
+            JOIN dim_datetime dd ON ft.datetime_id = dd.datetime_id
+            WHERE dd.year >= {YEAR_FILTER}
+                AND ft.trip_duration_min IS NOT NULL
+                AND ft.trip_duration_min > 0
+                AND ft.trip_duration_min < 120
+                AND ft.trip_distance IS NOT NULL
+                AND ft.trip_distance > 0
+                AND ft.trip_distance < 50
+            LIMIT 100000
+        """,
+        'temp_trips_scatter': f"""
+            SELECT 
                 dw.temp,
                 COUNT(*) as trip_count
             FROM fact_trips ft
@@ -245,9 +257,8 @@ def load_data():
             JOIN dim_datetime dd ON ft.datetime_id = dd.datetime_id
             WHERE dd.year >= {YEAR_FILTER}
                 AND dw.temp IS NOT NULL
-            GROUP BY dw.datetime_id, dd.date, dd.hour, dw.temp
-            ORDER BY dw.datetime_id
-            LIMIT 10000
+            GROUP BY dw.temp
+            ORDER BY dw.temp
         """,
         'correlation': f"""
             SELECT
@@ -291,7 +302,7 @@ def load_data():
                 AND ft.trip_distance > 0
                 AND ft.trip_distance < 100
                 AND df.fare_amount > 0
-                LIMIT 50000
+                LIMIT 10000
         """,
         'cluster_data': f"""
               SELECT
@@ -305,7 +316,7 @@ def load_data():
                 AND df.tip_amount IS NOT NULL
                 AND df.fare_amount IS NOT NULL
                 AND ft.trip_distance IS NOT NULL
-              LIMIT 50000
+              LIMIT 10000
           """,
         'regression_data': f"""
               SELECT
@@ -351,6 +362,22 @@ def load_data():
              WHERE dd.year >= {YEAR_FILTER}
              GROUP BY ft."DOLocationID"
          """,
+        'zone_regression': f"""
+            SELECT 
+                ft.trip_distance,
+                df.fare_amount
+            FROM fact_trips ft
+            JOIN dim_fare df ON ft.fare_id = df.fare_id
+            JOIN dim_datetime dd ON ft.datetime_id = dd.datetime_id
+            WHERE dd.year >= {YEAR_FILTER}
+                AND ft.trip_distance IS NOT NULL
+                AND ft.trip_distance > 0
+                AND ft.trip_distance < 50
+                AND df.fare_amount IS NOT NULL
+                AND df.fare_amount > 0
+                AND df.fare_amount < 200
+            LIMIT 100000
+        """,
     }
 
     return tuple(execute_query(q, engine) for q in queries.values())
@@ -378,8 +405,8 @@ def create_app():
     # Load all data
     (df_monthly, df_weekday, df_heatmap, df_fare_weekday,
      df_hourly, df_top_pickup, df_payment,
-     df_weather_monthly, df_weather_conditions, df_weather_scatter, df_correlation, df_clustering, df_cluster,
-     df_regression, df_pickup_all, df_dropoff_all) = load_data()
+     df_weather_monthly, df_weather_conditions, df_weather_scatter, df_temp_trips_scatter, df_correlation, df_clustering, df_cluster,
+     df_regression, df_pickup_all, df_dropoff_all, df_zone_regression) = load_data()
 
     # Debug output
     print(f"[LOAD_DATA] df_weather_scatter shape: {df_weather_scatter.shape}")
@@ -503,7 +530,7 @@ def create_app():
         y = df_reg_clean[target_col]
 
         # Split data
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
         print(f"Regression: Training set size: {len(X_train):,}, Test set size: {len(X_test):,}")
 
@@ -512,8 +539,8 @@ def create_app():
             'Linear Regression': LinearRegression(),
             'Ridge Regression': Ridge(alpha=1.0),
             'Lasso Regression': Lasso(alpha=0.1),
-            'Random Forest': RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1),
-            'Gradient Boosting': GradientBoostingRegressor(n_estimators=100, max_depth=5, random_state=42)
+            'Random Forest': RandomForestRegressor(n_estimators=100, max_depth=10, n_jobs=-1),
+            'Gradient Boosting': GradientBoostingRegressor(n_estimators=100, max_depth=5)
         }
 
         for name, model in models.items():
@@ -533,7 +560,7 @@ def create_app():
                 'model': model
             }
 
-            print(f"{name}: RMSE={rmse:.2f}, MAE={mae:.2f}, R²={r2:.4f}")
+            print(f"{name}: RMSE={rmse:.2f}, MAE={mae:.2f}, R2={r2:.4f}")
 
         # Use best model for predictions
         best_model_name = max(regression_results.keys(), key=lambda k: regression_results[k]['R²'])
@@ -604,19 +631,14 @@ def create_app():
 
         html.Div([
             html.Div([dcc.Graph(id='weather-condition-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='temp-trips-scatter-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
+
+        html.Div([
             html.Div([dcc.Graph(id='weather-scatter-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='correlation-matrix-chart')], style={'flex': '1'}),
         ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
 
-        html.H2("Machine Learning: Polynomial Regression", style={'textAlign': 'center', 'marginTop': 40, 'marginBottom': 20, 'color': '#333'}),
-
-        html.Div([
-            html.Div([dcc.Graph(id='ml-polynomial-regression-chart')], style={'flex': '1'}),
-            html.Div([dcc.Graph(id='ml-actual-vs-predicted-chart')], style={'flex': '1'}),
-        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
-
-        html.Div([
-            html.Div([dcc.Graph(id='correlation-matrix-chart')], style={'width': '100%'}),
-        ], style={'marginBottom': '20px'}),
 
         html.H2("Trip Type Clustering Analysis",
                 style={'textAlign': 'center', 'marginTop': 40, 'marginBottom': 20, 'color': '#333'}),
@@ -653,6 +675,32 @@ def create_app():
             html.Div([dcc.Graph(id='feature-importance-chart')], style={'flex': '1'}),
             html.Div([dcc.Graph(id='residuals-chart')], style={'flex': '1'}),
         ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
+
+        html.Div([
+            html.Div([dcc.Graph(id='weather-polynomial-actual-vs-predicted-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
+
+        html.H2("Linear & Polynomial Regression: Trip Distance vs Fare Amount",
+                style={'textAlign': 'center', 'marginTop': 40, 'marginBottom': 20, 'color': '#333'}),
+
+        html.Div([
+            html.Div([dcc.Graph(id='zone-linear-regression-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='zone-polynomial-regression-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
+
+        html.Div([
+            html.Div([dcc.Graph(id='zone-linear-actual-vs-predicted-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='zone-polynomial-actual-vs-predicted-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
+
+        html.H2("Linear & Polynomial Regression: Trip Distance vs Trip Duration",
+                style={'textAlign': 'center', 'marginTop': 40, 'marginBottom': 20, 'color': '#333'}),
+
+        html.Div([
+            html.Div([dcc.Graph(id='ml-polynomial-regression-chart')], style={'flex': '1'}),
+            html.Div([dcc.Graph(id='ml-actual-vs-predicted-chart')], style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '20px', 'marginBottom': '20px'}),
+
     ], style={'padding': '20px', 'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#fafafa'})
 
     @callback(Output('monthly-duration-chart', 'figure'), Input('monthly-duration-chart', 'id'))
@@ -881,18 +929,34 @@ def create_app():
         fig.update_layout(**create_chart_layout('Trips by Weather Conditions', 'Weather Condition', 'Number of Trips'))
         return fig
 
+    @callback(Output('temp-trips-scatter-chart', 'figure'), Input('temp-trips-scatter-chart', 'id'))
+    def update_temp_trips_scatter_chart(_):
+        fig = go.Figure()
+        if not df_temp_trips_scatter.empty:
+            fig.add_trace(go.Scatter(
+                x=df_temp_trips_scatter['temp'],
+                y=df_temp_trips_scatter['trip_count'],
+                mode='markers',
+                marker=dict(size=10, color=df_temp_trips_scatter['trip_count'], colorscale='Viridis', showscale=True),
+                hovertemplate='Temp: %{x:.1f}°F<br>Trips: %{y:,}<extra></extra>'
+            ))
+        fig.update_layout(**create_chart_layout('Temperature vs Trip Count', 'Temperature (°F)', 'Number of Trips', 500))
+        return fig
+
     @callback(Output('weather-scatter-chart', 'figure'), Input('weather-scatter-chart', 'id'))
     def update_weather_scatter_chart(_):
         fig = go.Figure()
         if not df_weather_scatter.empty:
+            sample_size = min(10000, len(df_weather_scatter))
+            df_sample = df_weather_scatter.sample(sample_size)
             fig.add_trace(go.Scatter(
-                x=df_weather_scatter['temp'],
-                y=df_weather_scatter['trip_count'],
+                x=df_sample['trip_distance'],
+                y=df_sample['trip_duration_min'],
                 mode='markers',
-                marker=dict(size=10, color=df_weather_scatter['trip_count'], colorscale='Viridis', showscale=True),
-                hovertemplate='Temp: %{x}°F<br>Trips: %{y:,}<extra></extra>'
+                marker=dict(size=5, color=df_sample['trip_duration_min'], colorscale='Viridis', showscale=True, opacity=0.5),
+                hovertemplate='Distance: %{x:.1f} mi<br>Duration: %{y:.1f} min<extra></extra>'
             ))
-        fig.update_layout(**create_chart_layout('Trips vs Temperature', 'Temperature (°F)', 'Number of Trips', 500))
+        fig.update_layout(**create_chart_layout('Trip Distance vs Duration (per Trip)', 'Trip Distance (mi)', 'Trip Duration (min)', 500))
         return fig
 
     @callback(Output('ml-polynomial-regression-chart', 'figure'), Input('ml-polynomial-regression-chart', 'id'))
@@ -900,97 +964,74 @@ def create_app():
         fig = go.Figure()
 
         if not df_weather_scatter.empty and len(df_weather_scatter) > 10:
-            # X = Temperature per hour
-            # Y = Number of trips in that hour
+            X = df_weather_scatter['trip_distance'].values.reshape(-1, 1)
+            y = df_weather_scatter['trip_duration_min'].values
 
-            df_filtered = df_weather_scatter[df_weather_scatter['trip_count'] > 0].copy()
-
-            if len(df_filtered) < 10:
-                df_filtered = df_weather_scatter.copy()
-
-            X = df_filtered['temp'].values.reshape(-1, 1)
-            y = df_filtered['trip_count'].values
-
-            # Train/Test Split (70/30)
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
 
-            # Polynomial Features
             poly = PolynomialFeatures(degree=2, include_bias=False)
             X_train_poly = poly.fit_transform(X_train)
             X_test_poly = poly.transform(X_test)
 
-            # Train Polynomial Regression Model
             poly_reg_model = LinearRegression()
             poly_reg_model.fit(X_train_poly, y_train)
 
-            # Transform full dataset for prediction and scoring
             X_poly = poly.transform(X)
-
-            # Calculate coefficient of determination (R²)
             r_sq = poly_reg_model.score(X_poly, y)
-            print(f"\n=== Polynomial Regression Results ===")
-            print(f"coefficient of determination: {r_sq:.4f}")
-            print(f"Data points used: {len(X)} (filtered from {len(df_weather_scatter)})")
-            print(f"Temperature range: {X.min():.1f}°F to {X.max():.1f}°F")
-            print(f"Trip count range: {y.min():,.0f} to {y.max():,.0f}")
-            print(f"Avg trips per hour: {y.mean():,.0f}")
-            print(f"Correlation temp vs trips: {np.corrcoef(X.flatten(), y)[0,1]:.4f}")
-            print(f"====================================\n")
+            print(f"Trip Distance vs Duration - Polynomial R2: {r_sq:.4f}")
 
-            # Predictions
-            y_train_pred = poly_reg_model.predict(X_train_poly)
-            y_test_pred = poly_reg_model.predict(X_test_poly)
-
-            # Add test data scatter
             fig.add_trace(go.Scatter(
                 x=X_test.flatten(),
                 y=y_test,
                 mode='markers',
                 name='Test Data (30%)',
-                marker=dict(size=8, color='#ff7f0e', opacity=0.6),
-                hovertemplate='Temp: %{x:.1f}°F<br>Trips: %{y:,.0f}<extra></extra>'
+                marker=dict(size=4, color='#ff7f0e', opacity=0.3),
+                hovertemplate='Distance: %{x:.1f} mi<br>Duration: %{y:.1f} min<extra></extra>'
             ))
 
-            # Add training data scatter
             fig.add_trace(go.Scatter(
                 x=X_train.flatten(),
                 y=y_train,
                 mode='markers',
                 name='Training Data (70%)',
-                marker=dict(size=8, color='#1f77b4', opacity=0.6),
-                hovertemplate='Temp: %{x:.1f}°F<br>Trips: %{y:,.0f}<extra></extra>'
+                marker=dict(size=4, color='#1f77b4', opacity=0.3),
+                hovertemplate='Distance: %{x:.1f} mi<br>Duration: %{y:.1f} min<extra></extra>'
             ))
 
-            # Update layout with scores
+            X_line = np.linspace(X.min(), X.max(), 100).reshape(-1, 1)
+            X_line_poly = poly.transform(X_line)
+            y_line = poly_reg_model.predict(X_line_poly)
+            fig.add_trace(go.Scatter(
+                x=X_line.flatten(),
+                y=y_line,
+                mode='lines',
+                name='Polynomial Fit (Degree 2)',
+                line=dict(color='red', width=3),
+                hovertemplate='Distance: %{x:.1f} mi<br>Predicted: %{y:.1f} min<extra></extra>'
+            ))
+
             fig.update_layout(
-                title=f'Temperature vs Trip Count - Polynomial Regression (Degree 2)<br>' +
-                      f'<sub>Coefficient of Determination (R²): {r_sq:.4f}</sub>',
-                xaxis_title='Temperature (°F)',
-                yaxis_title='Number of Trips',
+                title=f'Trip Distance vs Duration - Polynomial Regression (Degree 2)<br>' +
+                      f'<sub>R2 Score: {r_sq:.4f} | Data Points: {len(X):,}</sub>',
+                xaxis_title='Trip Distance (mi)',
+                yaxis_title='Trip Duration (min)',
                 height=600,
                 template='plotly_white',
                 showlegend=True,
-                legend=dict(
-                    yanchor="top",
-                    y=0.99,
-                    xanchor="left",
-                    x=0.01
-                ),
+                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
                 hovermode='closest'
             )
         else:
             fig.update_layout(
                 title='Polynomial Regression - Insufficient Data',
-                xaxis_title='Temperature (F)',
-                yaxis_title='Number of Trips',
+                xaxis_title='Trip Distance (mi)',
+                yaxis_title='Trip Duration (min)',
                 height=600,
                 template='plotly_white',
                 annotations=[{
                     'text': 'Not enough data points for regression analysis',
-                    'xref': 'paper',
-                    'yref': 'paper',
-                    'x': 0.5,
-                    'y': 0.5,
+                    'xref': 'paper', 'yref': 'paper',
+                    'x': 0.5, 'y': 0.5,
                     'showarrow': False,
                     'font': {'size': 16, 'color': 'gray'}
                 }]
@@ -1003,60 +1044,43 @@ def create_app():
         fig = go.Figure()
 
         if not df_weather_scatter.empty and len(df_weather_scatter) > 50:
-            # Expand aggregated data same as first chart
-            df_filtered = df_weather_scatter[df_weather_scatter['trip_count'] > 0].copy()
+            X = df_weather_scatter['trip_distance'].values.reshape(-1, 1)
+            y = df_weather_scatter['trip_duration_min'].values
 
-            if len(df_filtered) < 10:
-                df_filtered = df_weather_scatter.copy()
-
-            # Use aggregated hourly data directly
-            X = df_filtered['temp'].values.reshape(-1, 1)
-            y = df_filtered['trip_count'].values
-
-            # Train/Test Split (70/30)
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
 
-            # Polynomial Features (degree=2)
             poly = PolynomialFeatures(degree=2, include_bias=False)
             X_train_poly = poly.fit_transform(X_train)
             X_test_poly = poly.transform(X_test)
 
-            # Train Polynomial Regression Model
             poly_reg_model = LinearRegression()
             poly_reg_model.fit(X_train_poly, y_train)
 
-            # Transform full dataset for prediction and scoring
             X_poly = poly.transform(X)
             y_pred_full = poly_reg_model.predict(X_poly)
-
-            # Calculate coefficient of determination (R²)
             r_sq = poly_reg_model.score(X_poly, y)
 
-            # Predictions
             y_train_pred = poly_reg_model.predict(X_train_poly)
             y_test_pred = poly_reg_model.predict(X_test_poly)
 
-            # plt.scatter(y_test, pred, color='r') - Test data actual vs predicted FIRST
             fig.add_trace(go.Scatter(
                 x=y_test,
                 y=y_test_pred,
                 mode='markers',
                 name='Test Data (30%)',
-                marker=dict(size=8, color='red', opacity=0.6),
-                hovertemplate='Actual: %{x:,.0f}<br>Predicted: %{y:,.0f}<extra></extra>'
+                marker=dict(size=4, color='red', opacity=0.3),
+                hovertemplate='Actual: %{x:.1f} min<br>Predicted: %{y:.1f} min<extra></extra>'
             ))
 
-            # plt.scatter(y, poly_reg_model.predict(x), color='g') - Training data actual vs predicted SECOND
             fig.add_trace(go.Scatter(
                 x=y_train,
                 y=y_train_pred,
                 mode='markers',
                 name='Training Data (70%)',
-                marker=dict(size=8, color='green', opacity=0.6),
-                hovertemplate='Actual: %{x:,.0f}<br>Predicted: %{y:,.0f}<extra></extra>'
+                marker=dict(size=4, color='green', opacity=0.3),
+                hovertemplate='Actual: %{x:.1f} min<br>Predicted: %{y:.1f} min<extra></extra>'
             ))
 
-            # Add perfect prediction line (diagonal)
             min_val = min(y.min(), y_pred_full.min())
             max_val = max(y.max(), y_pred_full.max())
             fig.add_trace(go.Scatter(
@@ -1069,34 +1093,27 @@ def create_app():
             ))
 
             fig.update_layout(
-                title=f'Actual vs Predicted Trip Count<br>' +
-                      f'<sub>Coefficient of Determination (R²): {r_sq:.4f}</sub>',
-                xaxis_title='Actual Number of Trips',
-                yaxis_title='Predicted Number of Trips',
+                title=f'Trip Distance → Duration: Actual vs Predicted<br>' +
+                      f'<sub>R2 Score: {r_sq:.4f}</sub>',
+                xaxis_title='Actual Duration (min)',
+                yaxis_title='Predicted Duration (min)',
                 height=600,
                 template='plotly_white',
                 showlegend=True,
-                legend=dict(
-                    yanchor="top",
-                    y=0.99,
-                    xanchor="left",
-                    x=0.01
-                ),
+                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
                 hovermode='closest'
             )
         else:
             fig.update_layout(
                 title='Actual vs Predicted - Insufficient Data',
-                xaxis_title='Actual Number of Trips',
-                yaxis_title='Predicted Number of Trips',
+                xaxis_title='Actual Duration (min)',
+                yaxis_title='Predicted Duration (min)',
                 height=600,
                 template='plotly_white',
                 annotations=[{
                     'text': 'Not enough data points for regression analysis',
-                    'xref': 'paper',
-                    'yref': 'paper',
-                    'x': 0.5,
-                    'y': 0.5,
+                    'xref': 'paper', 'yref': 'paper',
+                    'x': 0.5, 'y': 0.5,
                     'showarrow': False,
                     'font': {'size': 16, 'color': 'gray'}
                 }]
@@ -1379,8 +1396,6 @@ def create_app():
 
         return fig
 
-    # ------------------- Regression Callbacks -------------------
-
     @callback(Output('regression-comparison-chart', 'figure'), Input('regression-comparison-chart', 'id'))
     def update_regression_comparison(_):
         fig = go.Figure()
@@ -1389,7 +1404,7 @@ def create_app():
             model_names = list(regression_results.keys())
             rmse_values = [regression_results[m]['RMSE'] for m in model_names]
             mae_values = [regression_results[m]['MAE'] for m in model_names]
-            r2_values = [regression_results[m]['R²'] for m in model_names]
+            r2_values = [regression_results[m]['R2'] for m in model_names]
 
             fig.add_trace(go.Bar(
                 name='RMSE (min)',
@@ -1410,21 +1425,21 @@ def create_app():
             ))
 
             fig.add_trace(go.Scatter(
-                name='R² Score',
+                name='R2 Score',
                 x=model_names,
                 y=r2_values,
                 mode='lines+markers',
                 marker=dict(size=12, color='#FFD93D'),
                 line=dict(width=3),
                 yaxis='y2',
-                hovertemplate='R²: %{y:.4f}<extra></extra>'
+                hovertemplate='R2: %{y:.4f}<extra></extra>'
             ))
 
         fig.update_layout(
             title='Regression Model Performance Comparison',
             xaxis_title='Model',
             yaxis=dict(title='Error (minutes)', side='left'),
-            yaxis2=dict(title='R² Score', side='right', overlaying='y', range=[0, 1]),
+            yaxis2=dict(title='R2 Score', side='right', overlaying='y', range=[0, 1]),
             barmode='group',
             height=450,
             template='plotly_white',
@@ -1437,11 +1452,14 @@ def create_app():
     def update_regression_predictions(_):
         fig = go.Figure()
 
-        if not df_reg_pred.empty:
-            # Sample data for visualization if too many points
-            df_plot = df_reg_pred.sample(min(5000, len(df_reg_pred)), random_state=42)
+        best_r2 = 0
+        if regression_results:
+            best_model_name = max(regression_results.keys(), key=lambda k: regression_results[k]['R²'])
+            best_r2 = regression_results[best_model_name]['R2']
 
-            # Scatter plot
+        if not df_reg_pred.empty:
+            df_plot = df_reg_pred.sample(min(5000, len(df_reg_pred)))
+
             fig.add_trace(go.Scatter(
                 x=df_plot['actual'],
                 y=df_plot['predicted'],
@@ -1451,7 +1469,6 @@ def create_app():
                 hovertemplate='Actual: %{x:.1f} min<br>Predicted: %{y:.1f} min<extra></extra>'
             ))
 
-            # Perfect prediction line
             max_val = max(df_plot['actual'].max(), df_plot['predicted'].max())
             fig.add_trace(go.Scatter(
                 x=[0, max_val],
@@ -1463,7 +1480,7 @@ def create_app():
             ))
 
         fig.update_layout(
-            title='Actual vs Predicted Trip Duration (Best Model)',
+            title=f'Actual vs Predicted Trip Duration (Best Model)<br><sub>R2 Score: {best_r2:.4f}</sub>',
             xaxis_title='Actual Duration (minutes)',
             yaxis_title='Predicted Duration (minutes)',
             height=450,
@@ -1522,7 +1539,7 @@ def create_app():
             df_plot['residual'] = df_plot['actual'] - df_plot['predicted']
 
             # Sample for visualization
-            df_plot = df_plot.sample(min(5000, len(df_plot)), random_state=42)
+            df_plot = df_plot.sample(min(5000, len(df_plot)))
 
             fig.add_trace(go.Scatter(
                 x=df_plot['predicted'],
@@ -1542,6 +1559,397 @@ def create_app():
             height=450,
             template='plotly_white'
         )
+        return fig
+
+    @callback(Output('weather-polynomial-actual-vs-predicted-chart', 'figure'), Input('weather-polynomial-actual-vs-predicted-chart', 'id'))
+    def update_weather_polynomial_actual_vs_predicted(_):
+        fig = go.Figure()
+
+        if not df_reg_pred.empty and len(df_reg_pred) > 50:
+            df_sample = df_reg_pred.sample(min(50000, len(df_reg_pred)))
+            X = df_sample['actual'].values.reshape(-1, 1)
+            y = df_sample['predicted'].values
+
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
+
+            poly = PolynomialFeatures(degree=2, include_bias=False)
+            X_train_poly = poly.fit_transform(X_train)
+            X_test_poly = poly.transform(X_test)
+
+            poly_reg_model = LinearRegression()
+            poly_reg_model.fit(X_train_poly, y_train)
+
+            X_poly = poly.transform(X)
+            y_pred_full = poly_reg_model.predict(X_poly)
+            r_sq = poly_reg_model.score(X_poly, y)
+
+            y_train_pred = poly_reg_model.predict(X_train_poly)
+            y_test_pred = poly_reg_model.predict(X_test_poly)
+
+            fig.add_trace(go.Scatter(
+                x=y_test,
+                y=y_test_pred,
+                mode='markers',
+                name='Test Data (30%)',
+                marker=dict(size=4, color='red', opacity=0.3),
+                hovertemplate='Actual: %{x:.1f} min<br>Predicted: %{y:.1f} min<extra></extra>'
+            ))
+
+            fig.add_trace(go.Scatter(
+                x=y_train,
+                y=y_train_pred,
+                mode='markers',
+                name='Training Data (70%)',
+                marker=dict(size=4, color='green', opacity=0.3),
+                hovertemplate='Actual: %{x:.1f} min<br>Predicted: %{y:.1f} min<extra></extra>'
+            ))
+
+            min_val = min(y.min(), y_pred_full.min())
+            max_val = max(y.max(), y_pred_full.max())
+            fig.add_trace(go.Scatter(
+                x=[min_val, max_val],
+                y=[min_val, max_val],
+                mode='lines',
+                name='Perfect Prediction',
+                line=dict(color='black', width=2, dash='dash'),
+                hovertemplate='Perfect Prediction Line<extra></extra>'
+            ))
+
+            fig.update_layout(
+                title=f'Weather: Polynomial Regression - Actual vs Predicted<br>' +
+                      f'<sub>R2 Score: {r_sq:.4f}</sub>',
+                xaxis_title='Actual Duration (min)',
+                yaxis_title='Predicted Duration (min)',
+                height=600,
+                template='plotly_white',
+                showlegend=True,
+                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+                hovermode='closest'
+            )
+        else:
+            fig.update_layout(
+                title='Weather Polynomial: Actual vs Predicted - Insufficient Data',
+                xaxis_title='Actual Duration (min)',
+                yaxis_title='Predicted Duration (min)',
+                height=600,
+                template='plotly_white'
+            )
+
+        return fig
+
+    @callback(Output('zone-linear-regression-chart', 'figure'), Input('zone-linear-regression-chart', 'id'))
+    def update_zone_linear_regression(_):
+        fig = go.Figure()
+
+        if not df_zone_regression.empty and len(df_zone_regression) > 10:
+            X = df_zone_regression['trip_distance'].values.reshape(-1, 1)
+            y = df_zone_regression['fare_amount'].values
+
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
+
+            linear_model = LinearRegression()
+            linear_model.fit(X_train, y_train)
+
+            r_sq = linear_model.score(X, y)
+            print(f"Distance vs Fare - Linear R2: {r_sq:.4f}")
+
+            fig.add_trace(go.Scatter(
+                x=X_test.flatten(),
+                y=y_test,
+                mode='markers',
+                name='Test Data (30%)',
+                marker=dict(size=4, color='#ff7f0e', opacity=0.3),
+                hovertemplate='Distance: %{x:.1f} mi<br>Fare: $%{y:.2f}<extra></extra>'
+            ))
+
+            fig.add_trace(go.Scatter(
+                x=X_train.flatten(),
+                y=y_train,
+                mode='markers',
+                name='Training Data (70%)',
+                marker=dict(size=4, color='#1f77b4', opacity=0.3),
+                hovertemplate='Distance: %{x:.1f} mi<br>Fare: $%{y:.2f}<extra></extra>'
+            ))
+
+            X_line = np.linspace(X.min(), X.max(), 100).reshape(-1, 1)
+            y_line = linear_model.predict(X_line)
+            fig.add_trace(go.Scatter(
+                x=X_line.flatten(),
+                y=y_line,
+                mode='lines',
+                name='Linear Fit',
+                line=dict(color='red', width=3),
+                hovertemplate='Distance: %{x:.1f} mi<br>Predicted: $%{y:.2f}<extra></extra>'
+            ))
+
+            fig.update_layout(
+                title=f'Trip Distance vs Fare Amount - Linear Regression<br>' +
+                      f'<sub>R2 Score: {r_sq:.4f} | Data Points: {len(X):,}</sub>',
+                xaxis_title='Trip Distance (mi)',
+                yaxis_title='Fare Amount ($)',
+                height=600,
+                template='plotly_white',
+                showlegend=True,
+                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+                hovermode='closest'
+            )
+        else:
+            fig.update_layout(
+                title='Distance vs Fare Linear Regression - Insufficient Data',
+                xaxis_title='Trip Distance (mi)',
+                yaxis_title='Fare Amount ($)',
+                height=600,
+                template='plotly_white',
+                annotations=[{
+                    'text': 'Not enough data points for regression analysis',
+                    'xref': 'paper', 'yref': 'paper',
+                    'x': 0.5, 'y': 0.5,
+                    'showarrow': False,
+                    'font': {'size': 16, 'color': 'gray'}
+                }]
+            )
+
+        return fig
+
+    @callback(Output('zone-linear-actual-vs-predicted-chart', 'figure'), Input('zone-linear-actual-vs-predicted-chart', 'id'))
+    def update_zone_linear_actual_vs_predicted(_):
+        fig = go.Figure()
+
+        if not df_zone_regression.empty and len(df_zone_regression) > 10:
+            X = df_zone_regression['trip_distance'].values.reshape(-1, 1)
+            y = df_zone_regression['fare_amount'].values
+
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
+
+            linear_model = LinearRegression()
+            linear_model.fit(X_train, y_train)
+
+            r_sq = linear_model.score(X, y)
+
+            y_train_pred = linear_model.predict(X_train)
+            y_test_pred = linear_model.predict(X_test)
+
+            fig.add_trace(go.Scatter(
+                x=y_test,
+                y=y_test_pred,
+                mode='markers',
+                name='Test Data (30%)',
+                marker=dict(size=4, color='red', opacity=0.3),
+                hovertemplate='Actual: $%{x:.2f}<br>Predicted: $%{y:.2f}<extra></extra>'
+            ))
+
+            fig.add_trace(go.Scatter(
+                x=y_train,
+                y=y_train_pred,
+                mode='markers',
+                name='Training Data (70%)',
+                marker=dict(size=4, color='green', opacity=0.3),
+                hovertemplate='Actual: $%{x:.2f}<br>Predicted: $%{y:.2f}<extra></extra>'
+            ))
+
+            y_pred_full = linear_model.predict(X)
+            min_val = min(y.min(), y_pred_full.min())
+            max_val = max(y.max(), y_pred_full.max())
+            fig.add_trace(go.Scatter(
+                x=[min_val, max_val],
+                y=[min_val, max_val],
+                mode='lines',
+                name='Perfect Prediction',
+                line=dict(color='black', width=2, dash='dash'),
+                hovertemplate='Perfect Prediction Line<extra></extra>'
+            ))
+
+            fig.update_layout(
+                title=f'Distance → Fare: Actual vs Predicted (Linear)<br>' +
+                      f'<sub>R2 Score: {r_sq:.4f}</sub>',
+                xaxis_title='Actual Fare ($)',
+                yaxis_title='Predicted Fare ($)',
+                height=600,
+                template='plotly_white',
+                showlegend=True,
+                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+                hovermode='closest'
+            )
+        else:
+            fig.update_layout(
+                title='Distance → Fare: Actual vs Predicted - Insufficient Data',
+                xaxis_title='Actual Fare ($)',
+                yaxis_title='Predicted Fare ($)',
+                height=600,
+                template='plotly_white',
+                annotations=[{
+                    'text': 'Not enough data points for regression analysis',
+                    'xref': 'paper', 'yref': 'paper',
+                    'x': 0.5, 'y': 0.5,
+                    'showarrow': False,
+                    'font': {'size': 16, 'color': 'gray'}
+                }]
+            )
+
+        return fig
+
+    @callback(Output('zone-polynomial-regression-chart', 'figure'), Input('zone-polynomial-regression-chart', 'id'))
+    def update_zone_polynomial_regression(_):
+        fig = go.Figure()
+
+        if not df_zone_regression.empty and len(df_zone_regression) > 10:
+            X = df_zone_regression['trip_distance'].values.reshape(-1, 1)
+            y = df_zone_regression['fare_amount'].values
+
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
+
+            poly = PolynomialFeatures(degree=2, include_bias=False)
+            X_train_poly = poly.fit_transform(X_train)
+            X_test_poly = poly.transform(X_test)
+
+            poly_reg_model = LinearRegression()
+            poly_reg_model.fit(X_train_poly, y_train)
+
+            X_poly = poly.transform(X)
+
+            r_sq = poly_reg_model.score(X_poly, y)
+            print(f"Distance vs Fare - Polynomial R2: {r_sq:.4f}")
+
+            fig.add_trace(go.Scatter(
+                x=X_test.flatten(),
+                y=y_test,
+                mode='markers',
+                name='Test Data (30%)',
+                marker=dict(size=4, color='#ff7f0e', opacity=0.3),
+                hovertemplate='Distance: %{x:.1f} mi<br>Fare: $%{y:.2f}<extra></extra>'
+            ))
+
+            fig.add_trace(go.Scatter(
+                x=X_train.flatten(),
+                y=y_train,
+                mode='markers',
+                name='Training Data (70%)',
+                marker=dict(size=4, color='#1f77b4', opacity=0.3),
+                hovertemplate='Distance: %{x:.1f} mi<br>Fare: $%{y:.2f}<extra></extra>'
+            ))
+
+            X_line = np.linspace(X.min(), X.max(), 100).reshape(-1, 1)
+            X_line_poly = poly.transform(X_line)
+            y_line = poly_reg_model.predict(X_line_poly)
+            fig.add_trace(go.Scatter(
+                x=X_line.flatten(),
+                y=y_line,
+                mode='lines',
+                name='Polynomial Fit (Degree 2)',
+                line=dict(color='red', width=3),
+                hovertemplate='Distance: %{x:.1f} mi<br>Predicted: $%{y:.2f}<extra></extra>'
+            ))
+
+            fig.update_layout(
+                title=f'Trip Distance vs Fare Amount - Polynomial Regression (Degree 2)<br>' +
+                      f'<sub>R2 Score: {r_sq:.4f} | Data Points: {len(X):,}</sub>',
+                xaxis_title='Trip Distance (mi)',
+                yaxis_title='Fare Amount ($)',
+                height=600,
+                template='plotly_white',
+                showlegend=True,
+                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+                hovermode='closest'
+            )
+        else:
+            fig.update_layout(
+                title='Distance vs Fare Polynomial Regression - Insufficient Data',
+                xaxis_title='Trip Distance (mi)',
+                yaxis_title='Fare Amount ($)',
+                height=600,
+                template='plotly_white',
+                annotations=[{
+                    'text': 'Not enough data points for regression analysis',
+                    'xref': 'paper', 'yref': 'paper',
+                    'x': 0.5, 'y': 0.5,
+                    'showarrow': False,
+                    'font': {'size': 16, 'color': 'gray'}
+                }]
+            )
+
+        return fig
+
+    @callback(Output('zone-polynomial-actual-vs-predicted-chart', 'figure'), Input('zone-polynomial-actual-vs-predicted-chart', 'id'))
+    def update_zone_polynomial_actual_vs_predicted(_):
+        fig = go.Figure()
+
+        if not df_zone_regression.empty and len(df_zone_regression) > 10:
+            X = df_zone_regression['trip_distance'].values.reshape(-1, 1)
+            y = df_zone_regression['fare_amount'].values
+
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
+
+            poly = PolynomialFeatures(degree=2, include_bias=False)
+            X_train_poly = poly.fit_transform(X_train)
+            X_test_poly = poly.transform(X_test)
+
+            poly_reg_model = LinearRegression()
+            poly_reg_model.fit(X_train_poly, y_train)
+
+            X_poly = poly.transform(X)
+            y_pred_full = poly_reg_model.predict(X_poly)
+
+            r_sq = poly_reg_model.score(X_poly, y)
+
+            y_train_pred = poly_reg_model.predict(X_train_poly)
+            y_test_pred = poly_reg_model.predict(X_test_poly)
+
+            fig.add_trace(go.Scatter(
+                x=y_test,
+                y=y_test_pred,
+                mode='markers',
+                name='Test Data (30%)',
+                marker=dict(size=4, color='red', opacity=0.3),
+                hovertemplate='Actual: $%{x:.2f}<br>Predicted: $%{y:.2f}<extra></extra>'
+            ))
+
+            fig.add_trace(go.Scatter(
+                x=y_train,
+                y=y_train_pred,
+                mode='markers',
+                name='Training Data (70%)',
+                marker=dict(size=4, color='green', opacity=0.3),
+                hovertemplate='Actual: $%{x:.2f}<br>Predicted: $%{y:.2f}<extra></extra>'
+            ))
+
+            min_val = min(y.min(), y_pred_full.min())
+            max_val = max(y.max(), y_pred_full.max())
+            fig.add_trace(go.Scatter(
+                x=[min_val, max_val],
+                y=[min_val, max_val],
+                mode='lines',
+                name='Perfect Prediction',
+                line=dict(color='black', width=2, dash='dash'),
+                hovertemplate='Perfect Prediction Line<extra></extra>'
+            ))
+
+            fig.update_layout(
+                title=f'Distance → Fare: Actual vs Predicted (Polynomial)<br>' +
+                      f'<sub>R² Score: {r_sq:.4f}</sub>',
+                xaxis_title='Actual Fare ($)',
+                yaxis_title='Predicted Fare ($)',
+                height=600,
+                template='plotly_white',
+                showlegend=True,
+                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+                hovermode='closest'
+            )
+        else:
+            fig.update_layout(
+                title='Distance → Fare: Actual vs Predicted - Insufficient Data',
+                xaxis_title='Actual Fare ($)',
+                yaxis_title='Predicted Fare ($)',
+                height=600,
+                template='plotly_white',
+                annotations=[{
+                    'text': 'Not enough data points for regression analysis',
+                    'xref': 'paper', 'yref': 'paper',
+                    'x': 0.5, 'y': 0.5,
+                    'showarrow': False,
+                    'font': {'size': 16, 'color': 'gray'}
+                }]
+            )
+
         return fig
 
     return app
