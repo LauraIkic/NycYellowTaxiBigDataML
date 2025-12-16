@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import pandas as pd
 from sqlalchemy import text
 
-# nutzt euren bestehenden DB-Connector (wie in dashboard.py)
+# uses your existing DB connector (as in dashboard.py)
 from db_connection import DBConnection
 
 
@@ -13,8 +13,8 @@ DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', '
 
 class TaxiOpsPresentationDashboard:
     """
-    Präsentations-Dashboard für Taxi-Unternehmen (5min Pitch)
-    Fokus: (A) Zeitliche Nachfrage (Uhrzeit/Wochentag) + (C) Wetter -> Nachfrage
+    Presentation dashboard for taxi companies (5-minute pitch)
+    Focus: (A) Time-based demand (hour/day of week) + (C) Weather → demand
     """
 
     def __init__(self, year_filter: int = 2025, db_name: str = "ny_taxi_dwh"):
@@ -63,7 +63,7 @@ class TaxiOpsPresentationDashboard:
             ORDER BY day_of_week
         """
 
-        # Wetter: Trips pro Condition (über dim_weather)
+        # Weather: trips per condition (via dim_weather)
         q_weather_conditions = f"""
             SELECT dw.conditions,
                    COUNT(ft.datetime_id) as trip_count
@@ -75,7 +75,7 @@ class TaxiOpsPresentationDashboard:
             ORDER BY trip_count DESC
         """
 
-        # Temperatur vs Trips (kompakt, sehr intuitiv für Business)
+        # Temperature vs trips (compact, very intuitive for business)
         q_temp_trips = f"""
             SELECT dw.temp,
                    COUNT(*) as trip_count
@@ -150,7 +150,7 @@ class TaxiOpsPresentationDashboard:
             fig.add_annotation(text="No data available", showarrow=False)
             return fig
 
-        # Top N, damit es „pitch-ready“ bleibt
+        # Top N to keep it pitch-ready
         top_n = 8
         df_plot = df_weather.head(top_n).copy()
 
@@ -200,9 +200,9 @@ class TaxiOpsPresentationDashboard:
     @staticmethod
     def _kpi_weather_split(df_weather: pd.DataFrame) -> dict[str, str]:
         """
-        Sehr einfache Business-Kategorisierung:
-        - 'bad' wenn Condition Rain oder Snow enthält
-        - sonst 'good'
+        Very simple business categorization:
+        - 'bad' if condition contains Rain or Snow
+        - otherwise 'good'
         """
         if df_weather.empty:
             return {"good_pct": "n/a", "bad_pct": "n/a"}
@@ -261,8 +261,8 @@ class TaxiOpsPresentationDashboard:
             children=[
                 html.H1("NYC Taxi Ops – Insights Dashboard", style={"textAlign": "center"}),
                 html.P(
-                    "Ziel: Weniger Leerfahrten, höhere Auslastung – durch bessere Schicht- und Einsatzplanung "
-                    "(Zeit + Wetter als Steuerungsgrößen).",
+                    "Goal: Fewer empty trips, higher utilization – through better shift and fleet planning "
+                    "(time + weather as control variables).",
                     style={"textAlign": "center", "maxWidth": "900px", "margin": "0 auto 10px auto"}
                 ),
 
@@ -283,14 +283,14 @@ class TaxiOpsPresentationDashboard:
                     style={"background": "#ffffff", "borderRadius": "12px", "padding": "12px 14px"},
                     children=[
                         html.P(
-                            "Finding: Die Nachfrage ist nicht gleichmäßig verteilt. "
-                            "Es gibt klare Peaks am Morgen (Pendler) und am Abend (Feierabend).",
+                            "Finding: Demand is not evenly distributed. "
+                            "There are clear peaks in the morning (commuters) and in the evening (after work).",
                             style={"marginBottom": "8px"}
                         ),
                         html.Ul([
-                            html.Li("Mehr Fahrzeuge/Schichten zwischen ca. 07–10 Uhr und 16–19 Uhr."),
-                            html.Li("Reduzierte Flotte in der Nacht (ca. 02–05 Uhr) spart Kosten/Leerfahrten."),
-                            html.Li("Steuerung über Dispatching + Schichtplanung (Forecasting optional)."),
+                            html.Li("More vehicles/shifts between approx. 07–10 and 16–19."),
+                            html.Li("Reduced fleet at night (approx. 02–05) saves costs and empty trips."),
+                            html.Li("Control via dispatching and shift planning (forecasting optional)."),
                         ]),
                     ],
                 ),
@@ -310,14 +310,14 @@ class TaxiOpsPresentationDashboard:
                     style={"background": "#ffffff", "borderRadius": "12px", "padding": "12px 14px"},
                     children=[
                         html.P(
-                            "Finding: Wetter ist ein externer Treiber – klar sichtbar in den Trips pro Wetterlage. "
-                            "Das ermöglicht eine dynamische Einsatzplanung (z.B. am Vortag / am Morgen).",
+                            "Finding: Weather is an external driver – clearly visible in trips per weather condition. "
+                            "This enables dynamic planning (e.g. the day before or in the morning).",
                             style={"marginBottom": "8px"}
                         ),
                         html.Ul([
-                            html.Li("Bei Clear/Partially Cloudy entstehen die meisten Fahrten."),
-                            html.Li("Bei Rain/Snow-Kombinationen bricht die Nachfrage deutlich ein."),
-                            html.Li("Empfehlung: Wetter-Forecast in die tägliche Flottenentscheidung einbauen."),
+                            html.Li("Most trips occur during clear or partially cloudy conditions."),
+                            html.Li("Demand drops significantly during rain/snow combinations."),
+                            html.Li("Recommendation: Integrate weather forecasts into daily fleet decisions."),
                         ]),
                     ],
                 ),
@@ -336,17 +336,20 @@ class TaxiOpsPresentationDashboard:
                     style={"background": "#f5f5f5", "borderRadius": "12px", "padding": "12px 14px"},
                     children=[
                         html.Ol([
-                            html.Li("Schichtplanung an Peaks ausrichten (07–10, 16–19)."),
-                            html.Li("Nachtflotte reduzieren (02–05) oder nur gezielt (Airport/Hotspots)."),
-                            html.Li("Wetter-Forecast als Trigger: Good weather → mehr Fahrzeuge, Bad weather → Fokus auf Kernzonen."),
-                            html.Li("Optionaler nächster Schritt: Forecast-Modell für Trips/Hour als Entscheidungsunterstützung."),
+                            html.Li("Align shift planning with demand peaks (07–10, 16–19)."),
+                            html.Li("Reduce night fleet (02–05) or deploy selectively (airport/hotspots)."),
+                            html.Li("Use weather forecasts as a trigger: good weather → more vehicles, bad weather → focus on core zones."),
+                            html.Li("Optional next step: forecasting model for trips per hour as decision support."),
                         ])
                     ],
                 ),
 
                 html.Div(style={"height": "18px"}),
-                html.P("Data Source: NYC Yellow Cab + Weather | Year Filter: "
-                       f"{self.year_filter}", style={"opacity": "0.6", "textAlign": "center"}),
+                html.P(
+                    "Data Source: NYC Yellow Cab + Weather | Year Filter: "
+                    f"{self.year_filter}",
+                    style={"opacity": "0.6", "textAlign": "center"}
+                ),
             ]
         )
 
