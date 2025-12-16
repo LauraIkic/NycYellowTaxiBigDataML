@@ -66,14 +66,28 @@ class TaxiOpsPresentationDashboard:
         """
 
         q_weather_conditions = f"""
-            SELECT dw.conditions,
-                   COUNT(ft.datetime_id) AS trip_count
+            SELECT 
+                CASE 
+                    WHEN LOWER(dw.conditions) IN ('partially cloudy', 'clear', 'overcast') 
+                    THEN 'Good Weather'
+                    WHEN LOWER(dw.conditions) IN ('rain, overcast', 'rain, partially cloudy', 'snow, rain, overcast')
+                    THEN 'Bad Weather'
+                    ELSE 'Other'
+                END AS weather_group,
+                COUNT(ft.datetime_id) AS total_trips,
+                COUNT(DISTINCT dw.datetime_id) AS hours_with_condition,
+                CASE 
+                    WHEN COUNT(DISTINCT dw.datetime_id) > 0 
+                    THEN COUNT(ft.datetime_id)::float / COUNT(DISTINCT dw.datetime_id)
+                    ELSE 0 
+                END AS avg_trips_per_hour
             FROM dim_weather dw
             LEFT JOIN fact_trips ft ON ft.datetime_id = dw.datetime_id
             JOIN dim_datetime dd ON dw.datetime_id = dd.datetime_id
-            WHERE dd.year >= {self.year_filter}
-            GROUP BY dw.conditions
-            ORDER BY trip_count DESC
+            WHERE dd.year >= {self.year_filter} AND dw.conditions IS NOT NULL
+            GROUP BY weather_group
+            HAVING COUNT(DISTINCT dw.datetime_id) > 0
+            ORDER BY avg_trips_per_hour DESC
         """
 
         q_temp_trips = f"""
@@ -152,25 +166,38 @@ class TaxiOpsPresentationDashboard:
             fig.add_annotation(text="No data available", showarrow=False)
             return fig
 
-        df_plot = df.head(8).copy()
+        df_plot = df[df['weather_group'] != 'Other'].copy()
 
-        def color_mapper(c):
-            if c and ("Rain" in c or "Snow" in c):
-                return "#d32f2f"  # red = risk
-            return "#388e3c"      # green = opportunity
+        colors = []
+        for group in df_plot["weather_group"]:
+            if group == "Bad Weather":
+                colors.append("#d32f2f")
+            elif group == "Good Weather":
+                colors.append("#388e3c")
+            else:
+                colors.append("#999999")
 
         fig.add_trace(go.Bar(
-            x=df_plot["conditions"],
-            y=df_plot["trip_count"],
-            marker_color=df_plot["conditions"].apply(color_mapper)
+            x=df_plot["weather_group"],
+            y=df_plot["avg_trips_per_hour"],
+            marker_color=colors,
+            text=df_plot["avg_trips_per_hour"].apply(lambda x: f"{int(x):,}"),
+            textposition='outside',
+            hovertemplate='<b>%{x}</b><br>' +
+                         'Avg Trips/Hour: %{y:,.0f}<br>' +
+                         'Hours: %{customdata}<br>' +
+                         '<extra></extra>',
+            customdata=df_plot["hours_with_condition"]
         ))
 
         fig.update_layout(
-            title="Demand by Weather Condition",
-            xaxis_title="Weather Condition",
-            yaxis_title="Number of Trips",
+            title="Demand by Weather Category (Normalized)",
+            xaxis_title="Weather Category",
+            yaxis_title="Average Trips per Hour",
             plot_bgcolor="#ffffff",
-            paper_bgcolor="#ffffff"
+            paper_bgcolor="#ffffff",
+            showlegend=False,
+            yaxis=dict(range=[0, df_plot["avg_trips_per_hour"].max() * 1.2])
         )
         return fig
 
@@ -264,34 +291,40 @@ class TaxiOpsPresentationDashboard:
                 ),
 
                 # -------- Section C --------
-                html.H2("C) Weather-Driven Demand (CEO View)", style={"marginTop": "32px"}),
+                html.H2("Weather-Driven Demand", style={"marginTop": "32px"}),
 
                 html.Div(
                     style={
-                        "background": "#f5f7fa",
+                        "background": "#ffffff",
                         "borderRadius": "12px",
-                        "padding": "16px 18px",
-                        "borderLeft": "6px solid #1e88e5",
-                        "maxWidth": "1100px",
-                        "margin": "0 auto"
+                        "padding": "16px",
+                        "border": "2px solid #e0e0e0",
+                        "marginBottom": "16px"
                     },
                     children=[
-                        html.P("Executive Insight:", style={"fontWeight": "700"}),
-                        html.P(
-                            "Weather is a controllable planning lever, not a background variable. "
-                            "Stable weather consistently drives demand, while rain and snow materially suppress volume. "
-                            "These effects are predictable and can be acted on with confidence."
-                        ),
-                        html.Ul([
-                            html.Li("Clear and partially cloudy conditions represent peak revenue opportunities."),
-                            html.Li("Rain and snow trigger immediate demand contraction and margin pressure."),
+                        html.Div(style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "12px", "color": "#333"},
+                                children=["Weather Impact on Fleet Planning"]),
+
+                        html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "12px"}, children=[
+                            html.Div(style={"background": "#e8f5e9", "borderRadius": "8px", "padding": "12px"}, children=[
+                                html.Div("Good Weather", style={"fontSize": "16px", "fontWeight": "bold", "color": "#2d7a2d"}),
+                                html.Div("Standard fleet deployment", style={"fontSize": "14px", "color": "#333"}),
+                            ]),
+
+                            html.Div(style={"background": "#fff3e0", "borderRadius": "8px", "padding": "12px", "border": "1px solid #ff9800"}, children=[
+                                html.Div("Bad Weather", style={"fontSize": "16px", "fontWeight": "bold", "color": "#e65100"}),
+                                html.Div("Increase +15% (more taxi demand)", style={"fontSize": "14px", "color": "#333"}),
+                            ]),
                         ]),
-                        html.P("Recommendations:", style={"fontWeight": "700"}),
-                        html.P(
-                            "Embed short-term weather forecasts into daily fleet and shift planning to proactively "
-                            "scale capacity up during stable conditions and protect margins during adverse weather.",
-                            style={"fontStyle": "italic"}
-                        ),
+
+                        html.Div(style={"marginTop": "12px", "padding": "10px", "background": "#fff3e0",
+                                       "borderRadius": "6px", "borderLeft": "4px solid #ff9800"}, children=[
+                            html.Div("Strategy:", style={"fontWeight": "bold", "marginBottom": "4px", "color": "#e65100"}),
+                            html.Div("Rain/snow increases taxi demand as people avoid walking/cycling. " +
+                                    "Use weather forecasts to pre-position extra vehicles in core areas before bad weather hits. " +
+                                    "Focus: Manhattan, transport hubs, business districts.",
+                                    style={"fontSize": "14px", "color": "#333", "lineHeight": "1.4"}),
+                        ]),
                     ],
                 ),
 
