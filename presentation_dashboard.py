@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import pandas as pd
 from sqlalchemy import text
 
-# nutzt euren bestehenden DB-Connector (wie in dashboard.py)
+# uses your existing DB connector
 from db_connection import DBConnection
 
 
@@ -13,8 +13,9 @@ DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', '
 
 class TaxiOpsPresentationDashboard:
     """
-    Präsentations-Dashboard für Taxi-Unternehmen (5min Pitch)
-    Fokus: (A) Zeitliche Nachfrage (Uhrzeit/Wochentag) + (C) Wetter -> Nachfrage
+    Merged operations dashboard for taxi companies
+    Section A: Time-based demand (from file 1)
+    Section C: Weather-driven demand (from file 2)
     """
 
     def __init__(self, year_filter: int = 2025, db_name: str = "ny_taxi_dwh"):
@@ -63,19 +64,32 @@ class TaxiOpsPresentationDashboard:
             ORDER BY day_of_week
         """
 
-        # Wetter: Trips pro Condition (über dim_weather)
+        # Weather conditions query from file 2
         q_weather_conditions = f"""
-            SELECT dw.conditions,
-                   COUNT(ft.datetime_id) as trip_count
+            SELECT 
+                CASE 
+                    WHEN LOWER(dw.conditions) IN ('partially cloudy', 'clear', 'overcast') 
+                    THEN 'Good Weather'
+                    WHEN LOWER(dw.conditions) IN ('rain, overcast', 'rain, partially cloudy', 'snow, rain, overcast')
+                    THEN 'Bad Weather'
+                    ELSE 'Other'
+                END AS weather_group,
+                COUNT(ft.datetime_id) AS total_trips,
+                COUNT(DISTINCT dw.datetime_id) AS hours_with_condition,
+                CASE 
+                    WHEN COUNT(DISTINCT dw.datetime_id) > 0 
+                    THEN COUNT(ft.datetime_id)::float / COUNT(DISTINCT dw.datetime_id)
+                    ELSE 0 
+                END AS avg_trips_per_hour
             FROM dim_weather dw
             LEFT JOIN fact_trips ft ON ft.datetime_id = dw.datetime_id
             JOIN dim_datetime dd ON dw.datetime_id = dd.datetime_id
-            WHERE dd.year >= {self.year_filter}
-            GROUP BY dw.conditions
-            ORDER BY trip_count DESC
+            WHERE dd.year >= {self.year_filter} AND dw.conditions IS NOT NULL
+            GROUP BY weather_group
+            HAVING COUNT(DISTINCT dw.datetime_id) > 0
+            ORDER BY avg_trips_per_hour DESC
         """
 
-        # Temperatur vs Trips (kompakt, sehr intuitiv für Business)
         q_temp_trips = f"""
             SELECT dw.temp,
                    COUNT(*) as trip_count
@@ -104,7 +118,7 @@ class TaxiOpsPresentationDashboard:
             "temp_trips": df_temp,
         }
 
-    # -------------------- figures --------------------
+    # -------------------- Section A figures (from file 1) --------------------
     def _fig_trips_by_hour(self, df_hourly: pd.DataFrame) -> go.Figure:
         fig = go.Figure()
         if df_hourly.empty:
@@ -179,50 +193,77 @@ class TaxiOpsPresentationDashboard:
         )
         return fig
 
-    def _fig_weather_conditions(self, df_weather: pd.DataFrame) -> go.Figure:
+    # -------------------- Section C figures (from file 2) --------------------
+    def _fig_weather_conditions(self, df: pd.DataFrame) -> go.Figure:
         fig = go.Figure()
-        if df_weather.empty:
+        if df.empty:
             fig.add_annotation(text="No data available", showarrow=False)
             return fig
 
-        # Top N, damit es „pitch-ready“ bleibt
-        top_n = 8
-        df_plot = df_weather.head(top_n).copy()
+        df_plot = df[df['weather_group'] != 'Other'].copy()
+
+        colors = []
+        for group in df_plot["weather_group"]:
+            if group == "Bad Weather":
+                colors.append("#d32f2f")
+            elif group == "Good Weather":
+                colors.append("#388e3c")
+            else:
+                colors.append("#999999")
 
         fig.add_trace(go.Bar(
-            x=df_plot["conditions"],
-            y=df_plot["trip_count"],
-            name="Trips"
+            x=df_plot["weather_group"],
+            y=df_plot["avg_trips_per_hour"],
+            marker_color=colors,
+            text=df_plot["avg_trips_per_hour"].apply(lambda x: f"{int(x):,}"),
+            textposition='outside',
+            hovertemplate='<b>%{x}</b><br>' +
+                         'Avg Trips/Hour: %{y:,.0f}<br>' +
+                         'Hours: %{customdata}<br>' +
+                         '<extra></extra>',
+            customdata=df_plot["hours_with_condition"]
         ))
+
         fig.update_layout(
-            title="Trips by Weather Conditions (Top Categories)",
-            xaxis_title="Weather Condition",
-            yaxis_title="Number of Trips",
-            margin=dict(l=40, r=20, t=60, b=80),
+            title="Demand by Weather Category (Normalized)",
+            xaxis_title="Weather Category",
+            yaxis_title="Average Trips per Hour",
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff",
+            showlegend=False,
+            yaxis=dict(range=[0, df_plot["avg_trips_per_hour"].max() * 1.2])
         )
         return fig
 
-    def _fig_temp_vs_trips(self, df_temp: pd.DataFrame) -> go.Figure:
+    def _fig_temp_vs_trips(self, df: pd.DataFrame) -> go.Figure:
         fig = go.Figure()
-        if df_temp.empty:
+        if df.empty:
             fig.add_annotation(text="No data available", showarrow=False)
             return fig
 
         fig.add_trace(go.Scatter(
-            x=df_temp["temp"],
-            y=df_temp["trip_count"],
+            x=df["temp"],
+            y=df["trip_count"],
             mode="markers",
-            name="Trips"
+            marker=dict(
+                size=7,
+                color=df["temp"],
+                colorscale="RdBu",
+                showscale=True,
+                colorbar=dict(title="Temperature")
+            )
         ))
+
         fig.update_layout(
-            title="Temperature vs Trip Count",
+            title="Temperature Impact on Trip Volume",
             xaxis_title="Temperature",
-            yaxis_title="Trips",
-            margin=dict(l=40, r=20, t=60, b=40),
+            yaxis_title="Number of Trips",
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff"
         )
         return fig
 
-    # -------------------- KPIs / insights --------------------
+    # -------------------- KPIs --------------------
     @staticmethod
     def _kpi_peak_hours(df_hourly: pd.DataFrame) -> str:
         if df_hourly.empty:
@@ -231,32 +272,6 @@ class TaxiOpsPresentationDashboard:
         top = df_hourly.sort_values("trip_count", ascending=False).head(3)["hour"].tolist()
         top = sorted([int(x) for x in top])
         return ", ".join([f"{h:02d}:00" for h in top])
-
-    @staticmethod
-    def _kpi_weather_split(df_weather: pd.DataFrame) -> dict[str, str]:
-        """
-        Sehr einfache Business-Kategorisierung:
-        - 'bad' wenn Condition Rain oder Snow enthält
-        - sonst 'good'
-        """
-        if df_weather.empty:
-            return {"good_pct": "n/a", "bad_pct": "n/a"}
-
-        df = df_weather.copy()
-        df["bucket"] = df["conditions"].fillna("Unknown").astype(str).apply(
-            lambda s: "bad" if ("Rain" in s or "Snow" in s) else "good"
-        )
-        total = df["trip_count"].sum()
-        if total <= 0:
-            return {"good_pct": "n/a", "bad_pct": "n/a"}
-
-        good = df.loc[df["bucket"] == "good", "trip_count"].sum()
-        bad = df.loc[df["bucket"] == "bad", "trip_count"].sum()
-
-        return {
-            "good_pct": f"{(good / total) * 100:.1f}%",
-            "bad_pct": f"{(bad / total) * 100:.1f}%"
-        }
 
     # -------------------- app layout --------------------
     def create_app(self) -> dash.Dash:
@@ -269,7 +284,6 @@ class TaxiOpsPresentationDashboard:
         df_temp = data["temp_trips"]
 
         peak_hours = self._kpi_peak_hours(df_hourly)
-        weather_split = self._kpi_weather_split(df_weather)
 
         fig_hour = self._fig_trips_by_hour(df_hourly)
         fig_weekday = self._fig_trips_by_weekday(df_weekday)
@@ -311,12 +325,10 @@ class TaxiOpsPresentationDashboard:
                     style={"display": "flex", "gap": "12px", "marginTop": "14px"},
                     children=[
                         kpi_card("Peak Hours (Top 3)", peak_hours),
-                        kpi_card("Trips in 'Good' Weather", weather_split["good_pct"]),
-                        kpi_card("Trips in 'Bad' Weather (Rain/Snow)", weather_split["bad_pct"]),
                     ],
                 ),
 
-                # ---- Section A: Time ----
+                # ---- Section A: Time (from file 1) ----
                 html.H2("Time-based Demand (Operations Scheduling)", style={"marginTop": "22px"}),
 
                 html.Div(
@@ -383,65 +395,55 @@ class TaxiOpsPresentationDashboard:
                     ],
                 ),
 
-                # ---- Section C: Weather ----
-                html.H2("Weather-driven Demand (Dynamic Planning)", style={"marginTop": "22px"}),
+                # ---- Section C: Weather (from file 2) ----
+                html.H2("Weather-Driven Demand (Dynamic Planning)", style={"marginTop": "32px"}),
 
                 html.Div(
-                    style={"background": "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)",
-                           "borderRadius": "12px", "padding": "16px", "color": "white"},
+                    style={
+                        "background": "#ffffff",
+                        "borderRadius": "12px",
+                        "padding": "16px",
+                        "border": "2px solid #e0e0e0",
+                        "marginBottom": "16px"
+                    },
                     children=[
-                        html.Div(style={"fontSize": "20px", "fontWeight": "bold", "marginBottom": "12px"},
-                                children=["Weather = Money: The $10K Daily Decision"]),
+                        html.Div(style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "12px", "color": "#333"},
+                                children=["Weather Impact on Fleet Planning"]),
 
-                        html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "12px", "marginTop": "12px"}, children=[
-                            # Sunny Day Strategy
-                            html.Div(style={"background": "rgba(255,255,255,0.15)", "borderRadius": "8px",
-                                           "padding": "12px", "border": "2px solid #FFD700"}, children=[
-                                html.Div("SUNNY DAY PLAYBOOK", style={"fontSize": "14px", "fontWeight": "bold", "marginBottom": "8px"}),
-                                html.Div("60-75°F + Clear Skies", style={"fontSize": "16px", "marginBottom": "6px"}),
-                                html.Div(style={"fontSize": "13px", "lineHeight": "1.5"}, children=[
-                                    "Deploy +10% fleet to tourist zones",
-                                    html.Br(),
-                                    "Extend shifts in Central Park area",
-                                    html.Br(),
-                                    "Weekend surge: increase by 15%",
-                                ]),
+                        html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "12px"}, children=[
+                            html.Div(style={"background": "#e8f5e9", "borderRadius": "8px", "padding": "12px"}, children=[
+                                html.Div("Good Weather", style={"fontSize": "16px", "fontWeight": "bold", "color": "#2d7a2d"}),
+                                html.Div("Standard fleet deployment", style={"fontSize": "14px", "color": "#333"}),
                             ]),
 
-                            # Rainy Day Strategy
-                            html.Div(style={"background": "rgba(255,255,255,0.15)", "borderRadius": "8px",
-                                           "padding": "12px"}, children=[
-                                html.Div("RAIN/SNOW PLAYBOOK", style={"fontSize": "14px", "fontWeight": "bold", "marginBottom": "8px"}),
-                                html.Div("Demand Drop Alert", style={"fontSize": "16px", "marginBottom": "6px"}),
-                                html.Div(style={"fontSize": "13px", "lineHeight": "1.5"}, children=[
-                                    "Pull back 15% from outer zones",
-                                    html.Br(),
-                                    "Focus: Manhattan core + stations",
-                                    html.Br(),
-                                    "Shorter shifts = less idle time",
-                                ]),
+                            html.Div(style={"background": "#fff3e0", "borderRadius": "8px", "padding": "12px", "border": "1px solid #ff9800"}, children=[
+                                html.Div("Bad Weather", style={"fontSize": "16px", "fontWeight": "bold", "color": "#e65100"}),
+                                html.Div("Increase +15% (more taxi demand)", style={"fontSize": "14px", "color": "#333"}),
                             ]),
                         ]),
 
-                        html.Div(style={"marginTop": "14px", "padding": "10px", "background": "rgba(0,0,0,0.2)",
-                                       "borderRadius": "6px", "borderLeft": "4px solid #FFD700"}, children=[
-                            html.Div("Tomorrow's Forecast = Tonight's Scheduling Decision",
-                                    style={"fontWeight": "bold", "marginBottom": "6px"}),
-                            html.Div("Set up automated alerts: Weather API → SMS to dispatch → Adjust tomorrow's roster before midnight. " +
-                                    "Expected savings: $200-500/day per 100 vehicles.",
-                                    style={"fontSize": "14px", "lineHeight": "1.4"}),
+                        html.Div(style={"marginTop": "12px", "padding": "10px", "background": "#fff3e0",
+                                       "borderRadius": "6px", "borderLeft": "4px solid #ff9800"}, children=[
+                            html.Div("Strategy:", style={"fontWeight": "bold", "marginBottom": "4px", "color": "#e65100"}),
+                            html.Div("Rain/snow increases taxi demand as people avoid walking/cycling. " +
+                                    "Use weather forecasts to pre-position extra vehicles in core areas before bad weather hits. " +
+                                    "Focus: Manhattan, transport hubs, business districts.",
+                                    style={"fontSize": "14px", "color": "#333", "lineHeight": "1.4"}),
                         ]),
                     ],
                 ),
 
                 html.Div(
-                    style={"display": "flex", "gap": "12px", "marginTop": "12px"},
+                    style={"display": "flex", "gap": "16px", "marginTop": "16px"},
                     children=[
-                        html.Div(style={"flex": "1"}, children=[dcc.Graph(figure=fig_weather)]),
-                        html.Div(style={"flex": "1"}, children=[dcc.Graph(figure=fig_temp)]),
+                        html.Div(style={"flex": "1"}, children=[
+                            dcc.Graph(figure=fig_weather)
+                        ]),
+                        html.Div(style={"flex": "1"}, children=[
+                            dcc.Graph(figure=fig_temp)
+                        ]),
                     ],
                 ),
-
 
                 html.Div(style={"height": "18px"}),
                 html.P("Data Source: NYC Yellow Cab + Weather | Year Filter: "
