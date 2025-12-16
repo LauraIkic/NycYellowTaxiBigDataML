@@ -35,9 +35,9 @@ def main() -> None:
     # PostgreSQL configuration. The database will be created if it
     # doesn't already exist.
     user = "postgres"
-    password = "password123"
+    password = "airbnb123d"
     host = "localhost"
-    port = "5433"
+    port = "5432"
     dbname = "ny_taxi_dwh"
 
     # Initialize the database connection and create the database if needed.

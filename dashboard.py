@@ -111,7 +111,7 @@ def _load_zone_lookup(path: Path = LOOKUP_CSV) -> tuple[dict[int, str], dict[int
 
 def get_db_engine():
     if not hasattr(get_db_engine, 'engine'):
-        db = DBConnection("postgres", "password123", "localhost", 5433, "ny_taxi_dwh")
+        db = DBConnection("postgres", "airbnb123d", "localhost", 5432, "ny_taxi_dwh")
         get_db_engine.engine = db.connect()
     return get_db_engine.engine
 
